@@ -1,0 +1,8 @@
+# Latex build output
+tex/build
+
+# Typst output
+typst/main.pdf
+
+# Training data
+src/data

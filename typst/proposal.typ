@@ -1,0 +1,78 @@
+#import "khw.typ": khw
+#show: khw.with(
+  title: [How Identifiability Constraints Shape the Loss Landscape in Causal Representation Learning],
+  author: "Alex Tu & Walker Gollapudi",
+  course: "CS 58700 - Purdue University",
+)
+
+#import "khw.typ": todo
+#import "khw.typ": problem
+#import "khw.typ": parts
+#import "khw.typ": proof
+#import "khw.typ": lemma_sketch
+#import "khw.typ": proof_sketch
+#import "@preview/algo:0.3.6": algo, i, d, comment, code
+
+#let tab = [#h(1.5em)]
+#show "IFF" : "if and only if"
+#set heading(numbering: "1.1 ")
+
+
+#set quote(block: true)
+
+/*
+* Project description guidelines
+*
+* Section "Introduction": ~1/2 page to describe objective, clearly define the task (statistically, e.g., learn p(x), learn p(y|x) where train and test data have the same distribution, etc.)
+*
+* Section "Dataset": ~1/4 page to describe dataset used and why it aligns with the task
+*
+* Section "Deep Learning Method": ~1/2 page to describe deep learning methods that will be used (or tried) and why it alignes with the task
+*
+* Section "Related work": ~1/2 page to describe the related work and how it connects to the proposed work
+*
+* Section "Expected results": ~1/4 page describing the expected results and metrics of success (how can we tell if you project has been successful?)
+*
+*/
+
+= Introduction
+
+Modern machine learning is largely grounded in statistical learning: models improve their performance by observing large streams of data from their environment and adjusting parameters to better predict future inputs. In some sense, this process resembles the gradual adaptation seen in Darwinian evolution, where species develop highly specialized abilities through incremental selection over long timescales. It explains how animals like owls evolved precise night vision or how dolphins developed sonar-like echolocation over millions of years. It does not explain how humans progressed from stone tools to satellites in only a few thousand. What humans possess that other species do not, Pearl (2018) argues, is the ability to form causal representations of their environment—mental models of how the world works, not just patterns in what has been observed.
+
+Recent statistical work has formalized this insight: models that incorporate causal structure yield representations that are more stable, robust to distribution shift, and easier to interpret (Richens et al., 2024). More fundamentally, causality appears to be necessary for meaningful representation learning, enabling models to generalize and transfer knowledge across new environments and tasks (Schölkopf et al., 2021; von Kügelgen et al., 2024).
+
+Motivated by these findings, as well as antithetical "black-box" nature of classical deep learning approaches, the field of _causal represention learning_ (CRL) has emerged. Consider how standard deep generative models (e.g., VAEs, diffusion models) often learn useful representations that are useful for prediction or generation but have no guarenteed semantic meaning. CRL instead assumes that the latent factors generating the data interact through an underlying causal structure. In particular, the latent variables are assumed to form a directed acyclic graph (DAG), which imposes an ordering of causal relationships: some latent factors influence others. This structure encodes assumptions about the mechanisms producing the observed data (for example, that lighting conditions influence shadows, which in turn affect pixel intensities) rather than allowing latent dimensions to interact arbitrarily.
+
+The goal of CRL is therefore to recover both the latent causal variables and the causal relationships among them from observed data, potentially leveraging additional signals such as interventions or multiple environments. If successful, the resulting representation captures the underlying data-generating mechanisms, leading to models that are more interpretable and more stable under distribution shifts than conventional deep learning representations. For this project, we adopt the formal framework for causal representation learning presented in Moran et al. 2026. That work, provides a precise mathematical formulation of the CRL problem—including the generative model, identifiability assumptions, and learning objectives.
+
+A central challenge in causal representation learning is identifiability. Because CRL models posit latent variables that generate the observed data, multiple different parameterizations can often produce the same distribution. In such cases, learning becomes ambiguous: even with infinite data, it is impossible to determine which latent representation corresponds to the underlying factors. This issue is well known in latent-variable models such as factor analysis and independent component analysis, where symmetries (e.g., permutations or rotations of latent variables) lead to many equivalent solutions (Anderson and Rubin, 1956). In the context of CRL, these ambiguities are especially problematic because the goal is not merely to learn a useful representation, but to recover the true causal factors and their relationships.
+
+Two related notions of identifiability arise in this setting. Statistical identifiability refers to whether the parameters of the generative model, and therefore the latent representation, can be uniquely determined from the observed data distribution. A model is statistically identifiable if different parameter values correspond to different observable distributions; otherwise, multiple parameterizations explain the data equally well. Causal identifiability, by contrast, concerns whether the causal structure among the latent variables can be uniquely determined. Even when the latent variables themselves are identifiable, the causal graph relating them may not be. In particular, observational data alone often identifies only a Markov equivalence class of directed acyclic graphs (DAGs): a set of graphs that encode the same conditional independence relations and therefore produce indistinguishable observational distributions (Lauritzen, 1996, Drton et al. 2023). Additional assumptions, such as interventions, temporal ordering, or multiple environments, are typically required to distinguish among graphs within this equivalence class and recover the true causal structure (Squires et al. 2023, Jiang and Aragam 2023).
+
+In this work, we investigate how these identifiability conditions affect the geometry of the optimization landscape encountered during training. In particular, we examine how the loss surface changes when the model is (i) statistically identifiable, (ii) causally identifiable, or (iii) both. Understanding this relationship may shed light on how identifiability assumptions influence optimization behavior, solution uniqueness, and the stability of learned representations.
+
+= Dataset
+
+To study how identifiability assumptions influence the geometry of the loss landscape, we require a dataset with three key properties. First, the underlying generative factors must be known so that we can reason about latent variables explicitly. Second, the data must be generated from a controllable process that allows us to simulate observational data, distribution shifts, and interventions. Third, the dataset should remain simple enough that the resulting optimization landscape is interpretable. To satisfy these requirements, we use the dSprites dataset introduced by Higgins et al. (2017) and distributed through Google’s disentanglement_lib. The dataset contains $64 times 64$ binary images of simple geometric shapes generated from five known latent factors: shape, scale, rotation, and $x$ and $y$ position. Because each image corresponds to a unique combination of these factors, the dataset provides explicit access to the underlying generative variables.
+
+= Deep Learning Method
+
+Following the framework described in Moran et al. 2026, we model the relationship between latent variables and observations using a deep generative model. In the CRL setting, high-dimensional observations $x in RR^D$ are assumed to be generated from a lower-dimensional vector of latent causal variables $z in RR^k$ through an unknown nonlinear mapping $x = f(z) + epsilon$ where $f$ is parameterized by a neural network and the latent variables $z$ are related by a causal directed acyclic graph.
+
+To learn this representation from data, we employ variational autoencoder (VAE)–style architectures, which are widely used in representation learning to infer latent variables from high-dimensional observations. The encoder network learns an approximate inverse mapping from observations to latent variables, while the decoder network models the generative mapping $f$. This architecture aligns with the CRL objective: it provides a flexible neural parameterization of the nonlinear mixing function while maintaining an explicit latent space in which causal structure can be imposed or recovered.
+
+= Related Work
+
+Most prior work in causal representation learning (CRL) has focused on identifiability at the population level, rather than on the geometry of the optimization landscape encountered during training. Foundational work such as Schölkopf et al. (2021) and subsequent identifiability results (e.g., von Kügelgen et al., 2024; Varıcı et al., 2024) characterize the assumptions under which latent causal variables and their relationships can be recovered from data. These results show that identifiability often requires additional signal, and that without such assumptions the underlying causal variables are not uniquely determined. However, these works typically analyze identifiability in a purely statistical sense, leaving open the question of how these assumptions influence the optimization landscape of the models used in practice.
+
+A small number of works have observed optimization challenges in CRL empirically. In particular, Brehmer et al. (2022) study latent causal models that jointly learn latent variables and their causal graph, and report that training is often hindered by local optima corresponding to incorrect causal structures. Their findings suggest that the learning problem exhibits a complex nonconvex landscape in which different graph configurations can act as competing minima. More broadly, even very simple deep generative models exhibit subtle statistical behavior during training. Kwon and Chae (2024) analyze the statistical properties of variational autoencoder–type estimators and show that the learning dynamics of generative models can be difficult to characterize even in low-dimensional settings. These observations highlight that optimization issues are intrinsic to latent-variable learning and may become more pronounced in CRL models, where additional structural constraints are imposed.
+
+Despite these connections, the relationship between identifiability assumptions and the geometry of the optimization landscape has received little direct attention. Most CRL work studies identifiability in the limit of infinite data, while optimization research focuses on generic neural network landscapes without reference to causal structure. Understanding the relationship between identifiability schemes alter the geometry of the loss surface may help explain why certain CRL models are difficult to train and how identifiability assumptions influence the stability and uniqueness of learned representations.
+
+= Expected Results
+
+The optimization landscape of causal representation learning models is known to be highly nonconvex and sensitive to modeling assumptions, even in relatively simple settings such as linear factor models (Moran et al., 2026). In non-identifiable models, multiple parameterizations can produce the same observational distribution, implying the existence of symmetries in parameter space. As a result, we expect the loss surface in this regime to contain large flat regions or manifolds of equivalent minima, reflecting the ambiguity of the learning problem. Introducing statistical identifiability should partially reduce this degeneracy. When the generative model becomes identifiable, different parameter values correspond to different observable outcomes. Consequently, we expect the loss landscape to exhibit fewer equivalent solutions and more localized minima. When the model becomes causally identifiable we expect the loss surface to become better behaved, with isolated minima corresponding more closely to the true generative parameters. Prior work suggests that identifiable models often exhibit more well-defined optima and improved optimization behavior (Moran et al., 2026; Kwon and Chae, 2024).
+
+#pagebreak()
+
+#bibliography("references.bib", title: "References", style: "apa")
