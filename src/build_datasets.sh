@@ -168,4 +168,4 @@ printf '%q ' "${CMD[@]}"
 echo
 "${CMD[@]}"
 
-echo "\nDone. Generated datasets are in $OUTDIR"
+echo "Done. Generated datasets are in $OUTDIR"

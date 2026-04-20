@@ -6,3 +6,13 @@ typst/main.pdf
 
 # Training data
 src/data
+
+# Python virtural enviroment
+.venv/
+
+# Python cache
+*.pyc
+src/__pycache__/
+.Python
+*.pyo
+*.pyd
