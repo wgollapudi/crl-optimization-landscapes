@@ -16,3 +16,6 @@ src/__pycache__/
 .Python
 *.pyo
 *.pyd
+
+# Runs directory
+src/runs
