@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
+import hashlib
 
 import numpy as np
 import torch
 from torch.optim import Adam
 
+from datetime import datetime
 from config import DataConfig, ModelConfig, OptimConfig, RunConfig
 from data import DataModule
 from engine import CheckpointManager, Trainer
@@ -24,6 +26,46 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+def infer_regime_name(data_path: Path) -> str:
+    stem = data_path.stem.lower()
+    known = {
+        "observational",
+        "overlap_support",
+        "single_node_interventions",
+        "two_interventions_per_node",
+    }
+    if stem in known:
+        return stem
+    return "unknown"
+
+
+def make_config_hash(args: argparse.Namespace) -> str:
+    relevant = {
+        "data_path": str(args.data_path),
+        "batch_size": args.batch_size,
+        "latent_dim": args.latent_dim,
+        "hidden_dim": args.hidden_dim,
+        "anchor_dim": args.anchor_dim,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "grad_clip_norm": args.grad_clip_norm,
+        "epochs": args.epochs,
+        "beta_warmup_epochs": args.beta_warmup_epochs,
+        "seed": args.seed,
+    }
+    payload = repr(sorted(relevant.items())).encode("utf-8")
+    return hashlib.md5(payload).hexdigest()[:8]
+
+
+def resolve_outdir(args: argparse.Namespace) -> Path:
+    if args.outdir not in {None, "", "auto"}:
+        return Path(args.outdir)
+
+    regime = infer_regime_name(args.data_path)
+    cfg_hash = make_config_hash(args)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path("runs") / f"{regime}_hash-{cfg_hash}_time-{timestamp}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,8 +96,8 @@ def parse_args() -> argparse.Namespace:
     # Run
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--outdir", type=Path, required=True)
-    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--outdir", type=str, default="auto")
+    parser.add_argument("--log-every", type=int, default=None)
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--save-every", type=int, default=10)
 
@@ -103,6 +145,7 @@ def build_configs(args: argparse.Namespace) -> tuple[DataConfig, ModelConfig, Op
 
 def main() -> None:
     args = parse_args()
+    args.outdir = resolve_outdir(args)
     data_cfg, model_cfg, optim_cfg, run_cfg = build_configs(args)
 
     run_cfg.outdir.mkdir(parents=True, exist_ok=True)
@@ -155,7 +198,7 @@ def main() -> None:
         save_every=run_cfg.save_every,
     )
 
-    logger.log_config(
+    logger.write_config(
         {
             "data": data_cfg,
             "data_summary": data_summary,
