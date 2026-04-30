@@ -13,8 +13,7 @@ from data import Batch
 from engine import move_batch_to_device
 from losses import LossBreakdown, StepInfo
 from models.base_vae import ModelOutput
-from landscape.params import ParamSpec, set_params_from_vector
-
+from landscape.params import ParamSpec, set_params_from_vector, trainable_named_params
 
 @contextmanager
 def temporary_params(
@@ -27,10 +26,10 @@ def temporary_params(
     """
     original = torch.cat([
         p.detach().reshape(-1).clone()
-        for _, p in model.named_parameters()
-        if p.requires_grad
+        for _, p in trainable_named_parameters(model)
     ])
 
+    device = next(model.parameters()).device
     set_params_from_vector(model, theta, specs)
     try:
         yield

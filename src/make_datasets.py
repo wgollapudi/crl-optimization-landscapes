@@ -251,7 +251,7 @@ def make_anchor_features(
     """
     if z.ndim != 2:
         raise ValueError(f"z must have shape [N, latent_dim], got {z.shape}")
-    if anchors_per_latent <= 2:
+    if anchors_per_latent < 2:
         raise ValueError("identifiability requires at least two anchors per latent")
     if noise_std < 0.0:
         raise ValueError("noise_std must be >= 0")

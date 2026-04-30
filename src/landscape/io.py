@@ -114,10 +114,13 @@ def checkpoint_path(
     run_dir = Path(run_dir)
 
     if checkpoint_kind == "final":
-        path = run_dir / "last.pt"
-        if not path.exists():
-            raise FileNotFoundError(f"Final checkpoint not found: {path}")
-        return path
+        primary = run_dir / "final.pt"
+        if primary.exists():
+            return primary
+        fallback = run_dir / "last.pt"
+        if fallback.exists():
+            return fallback
+        raise FileNotFoundError(...)
 
     if checkpoint_kind == "best_val":
         primary = run_dir / "best_val_loss.pt"

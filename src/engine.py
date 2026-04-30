@@ -127,6 +127,8 @@ class CheckpointManager:
                 "torch": torch.get_rng_state(),
                 "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             },
+            "model_name": getattr(model, "model_name", model.__class__.__name__),
+            "model_config": model.config_dict() if hasattr(model, "config_dict") else None,
         }
         torch.save(payload, path)
         return path
