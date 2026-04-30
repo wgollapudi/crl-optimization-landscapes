@@ -5,6 +5,9 @@ Finish evaluation infra (oh lawd)
 Make sure CD-VAE is good
 Testing
 
+Also:
+SparseVAE -> Low rank sparse VAE
+For each batch we do "hidden : [B, F, H]", for B=128, H=16, this gets very heavy fast (claude says 8 million activations) before gradients. Can we make this low rank?
 
 Technically the `overlap_support` dataset is not generated from the same master SCM. Hence, it does not follow the same latent distribution. We should fix this eventually, how, I have no idea.
 
@@ -20,7 +23,7 @@ likely an intervention-rich model with enough structure to support both latent i
 
 Estimators (still a work in progress), work off of Moran et al.
 Regime A: plain VAE
-Regime B: masked / sparse identifiable VAE (see Moran et al. 2022), with engineered anchor featrues added to the model. Append 8 scalar anchor channels, a_(1, 1), a(1, 2) depend on scale, a_(2,1),... depend on orientation and so on.
+Regime B: masked / sparse identifiable VAE (see Moran et al. 2022), with engineered anchor features added to the model. Append 8 scalar anchor channels, a_(1, 1), a(1, 2) depend on scale, a_(2,1),... depend on orientation and so on.
 Regime C: CausalDiscrepancy VAE (see Zheng et al. 2023)
 Regime D: same CausalDiscrepancy-VAE, just trained on the stronger regime
 

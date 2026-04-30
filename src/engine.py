@@ -349,7 +349,7 @@ class Trainer:
         batch: Batch,
         epoch: int,
         train: bool,
-    ) -> LossBreakdown:
+    ) -> tuple[LossBreakdown, dict[str, float]]: # loss, stats
         if train:
             self.optimizer.zero_grad(set_to_none=True)
 

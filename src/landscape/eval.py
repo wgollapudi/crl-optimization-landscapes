@@ -26,7 +26,7 @@ def temporary_params(
     """
     original = torch.cat([
         p.detach().reshape(-1).clone()
-        for _, p in trainable_named_parameters(model)
+        for _, p in trainable_named_params(model)
     ])
 
     device = next(model.parameters()).device
