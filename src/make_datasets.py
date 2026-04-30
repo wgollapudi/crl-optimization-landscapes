@@ -244,10 +244,14 @@ def make_anchor_features(
       z0_anchor0, z0_anchor1, ..., z1_anchor0, z1_anchor1, ...
 
     Each anchor depends on exactly one latent coordinate.
+
+    Note that anchor featrues are constructed as determanistic nonlinear functions of the underlying SCM latents prior to quantization. This preserves the identifiability assumptions of Moran et al. 2022, while images are generated from quantized latents via the dSprites renderer.
+
+    Unfortunatly, the model will now technically see two inconsistant views of "the same" latent, as image depends on z_quantized, and anchors depend on z_true.
     """
     if z.ndim != 2:
         raise ValueError(f"z must have shape [N, latent_dim], got {z.shape}")
-    if anchors_per_latent <= 0:
+    if anchors_per_latent <= 2:
         raise ValueError("identifiability requires at least two anchors per latent")
     if noise_std < 0.0:
         raise ValueError("noise_std must be >= 0")
@@ -293,7 +297,7 @@ def add_anchor_features(
     rng: np.random.Generator,
 ) -> None:
     arrays["anchor_features"] = make_anchor_features(
-        arrays["latents_quantized_continuous"],
+        arrays["latents_true_continuous"],
         anchors_per_latent=anchors_per_latent,
         noise_std=noise_std,
         rng=rng,
