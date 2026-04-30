@@ -64,8 +64,10 @@ class BaseVAE(nn.Module, ABC):
     def encode(self, batch: Batch) -> PosteriorParams:
         return self.encoder(batch.x_img, batch.x_anchor)
 
-    def sample_latent(self, posterior: PosteriorParams) -> Tensor:
-        return reparameterize(posterior.mu, posterior.logvar)
+    def sample_latent(self, posterior: PosteriorParams, sample: bool = True) -> Tensor:
+        if sample:
+            return reparameterize(posterior.mu, posterior.logvar)
+        return posterior.mu
 
     def latent_to_decoder_input(self, z: Tensor, batch: Batch) -> Tensor:
         """
@@ -94,9 +96,9 @@ class BaseVAE(nn.Module, ABC):
         """
         return {}
 
-    def forward(self, batch: Batch) -> ModelOutput:
+    def forward(self, batch: Batch, sample: bool = True) -> ModelOutput:
         posterior = self.encode(batch)
-        z = self.sample_latent(posterior)
+        z = self.sample_latent(posterior, sample=sample)
         decoder_latent = self.latent_to_decoder_input(z, batch)
         recon = self.decode(decoder_latent, batch)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 
 import torch
 from torch import Tensor, nn
@@ -10,6 +11,16 @@ from models.base_vae import BaseVAE, ModelOutput, Reconstruction
 from models.common import Encoder
 from models.plain_vae import ImageDecoder
 
+@dataclass
+class CausalDiscrepancyVAEConfig:
+    image_shape: tuple[int, int, int]
+    latent_dim: int
+    hidden_dim: int
+    num_intervention_variants: int = 2
+    mmd_weight: float = 1.0
+    graph_l1_weight: float = 1e-3
+    decoder_num_hidden_layers: int = 2
+    mmd_bandwidths: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0)
 
 def _normalized_sq_dists(x: Tensor, y: Tensor) -> Tensor:
     if x.ndim != 2 or y.ndim != 2:
@@ -193,6 +204,8 @@ class CausalDiscrepancyVAE(BaseVAE):
     lower-triangular SCM, and an MMD discrepancy over generated vs. real images.
     """
 
+    model_name = "CausalDiscrepancyVAE"
+
     def __init__(
         self,
         encoder: Encoder,
@@ -205,6 +218,7 @@ class CausalDiscrepancyVAE(BaseVAE):
         decoder_num_hidden_layers: int = 2,
         mmd_bandwidths: Sequence[float] = (0.25, 0.5, 1.0, 2.0, 4.0),
         activation: type[nn.Module] = nn.ReLU,
+        cfg: CausalDiscrepancyVAEConfig | None = None,
     ) -> None:
         super().__init__(encoder=encoder)
 
@@ -212,6 +226,17 @@ class CausalDiscrepancyVAE(BaseVAE):
             raise ValueError("mmd_weight must be >= 0")
         if graph_l1_weight < 0.0:
             raise ValueError("graph_l1_weight must be >= 0")
+
+        self.cfg = cfg or CausalDiscrepancyVAEConfig(
+            image_shape=tuple(image_shape),
+            latent_dim=latent_dim,
+            hidden_dim=hidden_dim,
+            num_intervention_variants=num_intervention_variants,
+            mmd_weight=mmd_weight,
+            graph_l1_weight=graph_l1_weight,
+            decoder_num_hidden_layers=decoder_num_hidden_layers,
+            mmd_bandwidths=tuple(float(v) for v in mmd_bandwidths),
+        )
 
         self.latent_dim = latent_dim
         self.image_shape = image_shape
@@ -231,6 +256,40 @@ class CausalDiscrepancyVAE(BaseVAE):
             num_hidden_layers=decoder_num_hidden_layers,
             activation=activation,
         )
+
+    @classmethod
+    def from_model_config(cls, model_cfg) -> "CausalDiscrepancyVAE":
+        cfg = CausalDiscrepancyVAEConfig(
+            image_shape=tuple(model_cfg.image_shape),
+            latent_dim=model_cfg.latent_dim,
+            hidden_dim=model_cfg.hidden_dim,
+            num_intervention_variants=model_cfg.num_intervention_variants,
+            mmd_weight=model_cfg.mmd_weight,
+            graph_l1_weight=model_cfg.graph_l1_weight,
+        )
+
+        encoder = Encoder(
+            image_shape=cfg.image_shape,
+            latent_dim=cfg.latent_dim,
+            hidden_dim=cfg.hidden_dim,
+            anchor_dim=0,
+        )
+
+        return cls(
+            encoder=encoder,
+            latent_dim=cfg.latent_dim,
+            image_shape=cfg.image_shape,
+            hidden_dim=cfg.hidden_dim,
+            num_intervention_variants=cfg.num_intervention_variants,
+            mmd_weight=cfg.mmd_weight,
+            graph_l1_weight=cfg.graph_l1_weight,
+            decoder_num_hidden_layers=cfg.decoder_num_hidden_layers,
+            mmd_bandwidths=cfg.mmd_bandwidths,
+            cfg=cfg,
+        )
+
+    def config_dict(self) -> dict:
+        return asdict(self.cfg)
 
     def latent_to_decoder_input(self, z: Tensor, batch: Batch) -> Tensor:
         return self.scm(

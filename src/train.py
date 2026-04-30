@@ -16,9 +16,8 @@ from data import DataModule
 from engine import CheckpointManager, Trainer
 from experiment_logging import ExperimentLogger
 from losses import AnchorLossConfig, LinearWarmupSchedule, VAELoss
-from models.common import Encoder
 from models.causal_discrepancy_vae import CausalDiscrepancyVAE
-from models.plain_vae import PlainVAE
+from models.plain_vae import PlainVAE, PlainVAEConfig
 from models.sparse_vae import SparseVAE
 
 
@@ -31,14 +30,14 @@ def set_seed(seed: int) -> None:
 
 def infer_regime_name(data_path: Path) -> str:
     stem = data_path.stem.lower()
-    known = {
-        "observational",
-        "overlap_support",
-        "single_node_interventions",
-        "two_interventions_per_node",
+    REGIME_MAP = {
+        "observational": "regimeA",
+        "overlap_support": "regimeB",
+        "single_node_interventions": "regimeC",
+        "two_interventions_per_node": "regimeD",
     }
-    if stem in known:
-        return stem
+    if stem in REGIME_MAP.keys():
+        return REGIME_MAP[stem]
     return "unknown"
 
 
@@ -199,46 +198,25 @@ def validate_data_summary(model_cfg: ModelConfig, data_summary: dict) -> None:
             )
 
 
-def build_model(model_cfg: ModelConfig) -> torch.nn.Module:
-    encoder = Encoder(
-        image_shape=model_cfg.image_shape,
+def build_plain_vae_config(model_cfg: ModelConfig) -> PlainVAEConfig:
+    return PlainVAEConfig(
+        image_shape=tuple(model_cfg.image_shape),
         latent_dim=model_cfg.latent_dim,
         hidden_dim=model_cfg.hidden_dim,
         anchor_dim=model_cfg.anchor_dim,
     )
 
+def build_model(model_cfg: ModelConfig) -> torch.nn.Module:
     if model_cfg.model_name == "plain":
-        return PlainVAE(
-            encoder=encoder,
-            latent_dim=model_cfg.latent_dim,
-            image_shape=model_cfg.image_shape,
-            hidden_dim=model_cfg.hidden_dim,
-            anchor_dim=model_cfg.anchor_dim,
-        )
+        return PlainVAE(build_plain_vae_config(model_cfg))
 
     if model_cfg.model_name == "sparse":
-        return SparseVAE(
-            encoder=encoder,
-            latent_dim=model_cfg.latent_dim,
-            image_shape=model_cfg.image_shape,
-            hidden_dim=model_cfg.hidden_dim,
-            anchor_dim=model_cfg.anchor_dim,
-            sparse_lambda=model_cfg.sparse_lambda,
-        )
+        return SparseVAE.from_model_config(model_cfg)
 
     if model_cfg.model_name == "causal_discrepancy":
-        return CausalDiscrepancyVAE(
-            encoder=encoder,
-            latent_dim=model_cfg.latent_dim,
-            image_shape=model_cfg.image_shape,
-            hidden_dim=model_cfg.hidden_dim,
-            num_intervention_variants=model_cfg.num_intervention_variants,
-            mmd_weight=model_cfg.mmd_weight,
-            graph_l1_weight=model_cfg.graph_l1_weight,
-        )
+        return CausalDiscrepancyVAE.from_model_config(model_cfg)
 
     raise ValueError(f"Unknown model_name: {model_cfg.model_name}")
-
 
 def main() -> None:
     args = parse_args()
@@ -292,6 +270,9 @@ def main() -> None:
             "optim": optim_cfg,
             "run": run_cfg,
             "model_class": model.__class__.__name__,
+            "model_checkpoint_config": (
+                model.config_dict() if hasattr(model, "config_dict") else None
+            ),
         }
     )
 

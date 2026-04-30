@@ -1,12 +1,25 @@
 # models/plain_vae.py
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+
 from torch import Tensor, nn
 
 from data import Batch
 from models.base_vae import BaseVAE, Reconstruction
 from models.common import Encoder, MLP
 
+
+@dataclass
+class PlainVAEConfig:
+    image_shape: tuple[int, int, int]
+    latent_dim: int
+    hidden_dim: int
+    anchor_dim: int = 0
+    encoder_hidden_layers: int = 2
+    decoder_hidden_layers: int = 2
+    fusion_hidden_layers: int = 1
+    anchor_decoder_hidden_layers: int = 1
 
 class ImageDecoder(nn.Module):
     """
@@ -92,44 +105,55 @@ class PlainVAE(BaseVAE):
 
     No sparsity, no causal layer, no discrepancy terms.
     """
+    model_name = "PlainVAE"
 
-    def __init__(
-        self,
-        encoder: Encoder,
-        latent_dim: int,
-        image_shape: tuple[int, int, int],
-        hidden_dim: int,
-        anchor_dim: int = 0,
-        decoder_num_hidden_layers: int = 2,
-        anchor_decoder_num_hidden_layers: int = 1,
-        activation: type[nn.Module] = nn.ReLU,
-    ) -> None:
+    def __init__(self, cfg: PlainVAEConfig) -> None:
+        encoder = Encoder(
+            image_shape=cfg.image_shape,
+            latent_dim=cfg.latent_dim,
+            hidden_dim=cfg.hidden_dim,
+            anchor_dim=cfg.anchor_dim,
+            image_num_hidden_layers=cfg.encoder_hidden_layers,
+            fusion_num_hidden_layers=cfg.fusion_hidden_layers,
+        )
         super().__init__(encoder=encoder)
 
-        self.latent_dim = latent_dim
-        self.image_shape = image_shape
-        self.hidden_dim = hidden_dim
-        self.anchor_dim = anchor_dim
+        self.cfg = cfg
 
         self.image_decoder = ImageDecoder(
-            latent_dim=latent_dim,
-            image_shape=image_shape,
-            hidden_dim=hidden_dim,
-            num_hidden_layers=decoder_num_hidden_layers,
-            activation=activation,
+            latent_dim=cfg.latent_dim,
+            image_shape=cfg.image_shape,
+            hidden_dim=cfg.hidden_dim,
+            num_hidden_layers=cfg.decoder_hidden_layers,
         )
 
         self.anchor_decoder: AnchorDecoder | None
-        if anchor_dim > 0:
+        if cfg.anchor_dim > 0:
             self.anchor_decoder = AnchorDecoder(
-                latent_dim=latent_dim,
-                anchor_dim=anchor_dim,
-                hidden_dim=hidden_dim,
-                num_hidden_layers=anchor_decoder_num_hidden_layers,
-                activation=activation,
+                latent_dim=cfg.latent_dim,
+                anchor_dim=cfg.anchor_dim,
+                hidden_dim=cfg.hidden_dim,
+                num_hidden_layers=cfg.anchor_decoder_hidden_layers,
             )
         else:
             self.anchor_decoder = None
+
+    @classmethod
+    def from_model_config(cls, model_cfg) -> "PlainVAE":
+        """
+        Build from your project-level ModelConfig.
+        """
+        return cls(
+            PlainVAEConfig(
+                image_shape=tuple(model_cfg.image_shape),
+                latent_dim=model_cfg.latent_dim,
+                hidden_dim=model_cfg.hidden_dim,
+                anchor_dim=model_cfg.anchor_dim,
+            )
+        )
+
+    def config_dict(self) -> dict:
+        return asdict(self.cfg)
 
     def decode(self, decoder_latent: Tensor, batch: Batch) -> Reconstruction:
         img_logits = self.image_decoder(decoder_latent)

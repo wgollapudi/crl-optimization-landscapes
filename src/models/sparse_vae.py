@@ -1,6 +1,8 @@
 # models/sparse_vae.py
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+
 import torch
 from torch import Tensor, nn
 
@@ -8,6 +10,16 @@ from data import Batch
 from models.base_vae import BaseVAE, ModelOutput, Reconstruction
 from models.common import Encoder
 
+@dataclass
+class SparseVAEConfig:
+    image_shape: tuple[int, int, int]
+    latent_dim: int
+    hidden_dim: int
+    anchor_dim: int
+    sparse_lambda: float = 1e-3
+    feature_hidden_dim: int = 16
+    anchor_hidden_dim: int = 16
+    gate_temperature: float = 1.0
 
 class SparseFeatureDecoder(nn.Module):
     """
@@ -164,6 +176,8 @@ class SparseVAE(BaseVAE):
     spike-and-slab sparsity machinery.
     """
 
+    model_name = "SparseVAE"
+
     def __init__(
         self,
         encoder: Encoder,
@@ -176,6 +190,7 @@ class SparseVAE(BaseVAE):
         anchor_hidden_dim: int = 16,
         gate_temperature: float = 1.0,
         activation: type[nn.Module] = nn.ReLU,
+        cfg: SparseVAEConfig | None = None,
     ) -> None:
         super().__init__(encoder=encoder)
 
@@ -194,6 +209,17 @@ class SparseVAE(BaseVAE):
             raise ValueError("SparseVAE requires at least two anchors per latent")
         if sparse_lambda < 0.0:
             raise ValueError("sparse_lambda must be >= 0")
+
+        self.cfg = cfg or SparseVAEConfig(
+            image_shape=tuple(image_shape),
+            latent_dim=latent_dim,
+            hidden_dim=hidden_dim,
+            anchor_dim=anchor_dim,
+            sparse_lambda=sparse_lambda,
+            feature_hidden_dim=feature_hidden_dim,
+            anchor_hidden_dim=anchor_hidden_dim,
+            gate_temperature=gate_temperature,
+        )
 
         self.latent_dim = latent_dim
         self.image_shape = image_shape
@@ -215,6 +241,39 @@ class SparseVAE(BaseVAE):
             hidden_dim=anchor_hidden_dim,
             activation=activation,
         )
+
+    @classmethod
+    def from_model_config(cls, model_cfg) -> "SparseVAE":
+        cfg = SparseVAEConfig(
+            image_shape=tuple(model_cfg.image_shape),
+            latent_dim=model_cfg.latent_dim,
+            hidden_dim=model_cfg.hidden_dim,
+            anchor_dim=model_cfg.anchor_dim,
+            sparse_lambda=model_cfg.sparse_lambda,
+        )
+
+        encoder = Encoder(
+            image_shape=cfg.image_shape,
+            latent_dim=cfg.latent_dim,
+            hidden_dim=cfg.hidden_dim,
+            anchor_dim=cfg.anchor_dim,
+        )
+
+        return cls(
+            encoder=encoder,
+            latent_dim=cfg.latent_dim,
+            image_shape=cfg.image_shape,
+            hidden_dim=cfg.hidden_dim,
+            anchor_dim=cfg.anchor_dim,
+            sparse_lambda=cfg.sparse_lambda,
+            feature_hidden_dim=cfg.feature_hidden_dim,
+            anchor_hidden_dim=cfg.anchor_hidden_dim,
+            gate_temperature=cfg.gate_temperature,
+            cfg=cfg,
+        )
+
+    def config_dict(self) -> dict:
+        return asdict(self.cfg)
 
     def decode(self, decoder_latent: Tensor, batch: Batch) -> Reconstruction:
         del batch

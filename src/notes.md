@@ -1,3 +1,11 @@
+Concens rn:
+When we checkpoint SparseVAE are we saving both decoders?
+Saving the right checkpoints
+Finish evaluation infra (oh lawd)
+Make sure CD-VAE is good
+Testing
+
+
 Technically the `overlap_support` dataset is not generated from the same master SCM. Hence, it does not follow the same latent distribution. We should fix this eventually, how, I have no idea.
 
 New experimental decomposition:
@@ -408,4 +416,80 @@ The next step is to decide the exact scalar definitions and numerical estimators
 [2]: https://arxiv.org/abs/1907.02911?utm_source=chatgpt.com "Weight-space symmetry in deep networks gives rise to permutation saddles, connected by equal-loss valleys across the loss landscape"
 [3]: https://www.pnas.org/doi/10.1073/pnas.1608103113?utm_source=chatgpt.com "Unreasonable effectiveness of learning neural networks"
 [4]: https://arxiv.org/pdf/1912.05671?utm_source=chatgpt.com "arXiv:1912.05671v4 [cs.LG] 18 Jul 2020"
+
+
+Yes.
+
+## 2. Why VAE loss evaluation is noisy
+
+A VAE does not usually compute reconstruction from exactly one deterministic latent. It samples:
+
+[
+z = \mu_\phi(x) + \sigma_\phi(x)\epsilon,\qquad \epsilon \sim \mathcal N(0,I).
+]
+
+So even with the **same model weights** (\theta), same input batch, and same loss function, the loss can change slightly every time because a new (\epsilon) is sampled.
+
+That is bad for landscape analysis. If you evaluate:
+
+[
+L(\theta + \alpha d)
+]
+
+along a slice, some wiggles in the curve may be real landscape geometry, but some may just be sampling noise.
+
+You have three options:
+
+**Best default: deterministic posterior mean.**
+Use (z=\mu_\phi(x)) during landscape evaluation. This removes sampling noise and makes “loss at (\theta)” a real deterministic quantity.
+
+**Alternative: fixed noise.**
+Pre-sample (\epsilon) once per batch and reuse it for every point in the slice/interpolation. This preserves the stochastic VAE objective more faithfully, but is more annoying to implement.
+
+**Expensive alternative: Monte Carlo average.**
+Evaluate each point multiple times with different (\epsilon) and average. More faithful, slower.
+
+I’d use **posterior mean** for the primary landscape probes, and maybe fixed-noise/MC average as a robustness check later.
+
+## 4. Why direction normalization matters
+
+Suppose you plot loss along:
+
+[
+\theta + \alpha d
+]
+
+where (d) is a random direction.
+
+If one layer has large weights and another has tiny weights, a naive random direction may perturb the tiny layer much more aggressively relative to its scale. Then your plot reflects arbitrary parameter scaling, not meaningful geometry.
+
+This is especially dangerous because neural networks have scale symmetries. For example, in a ReLU network, you can often multiply one layer by (c) and the next by (1/c) without changing the function much. The raw parameter coordinates changed, but the function did not.
+
+So direction normalization tries to make perturbations comparable to the scale of each layer.
+
+The simplest useful version is **layer-wise normalization**:
+
+For each parameter tensor (W_\ell), sample random noise (D_\ell), then rescale it so:
+
+[
+|D_\ell| = |W_\ell|.
+]
+
+Then the perturbation direction changes each layer by a comparable relative amount.
+
+So for a slice:
+
+[
+\theta(\alpha)=\theta+\alpha d,
+]
+
+(\alpha = 0.01) roughly means “move each layer by about 1% of its norm,” not “move in some arbitrary global direction.”
+
+For our first implementation, I would use:
+
+* layer-wise normalization for weights,
+* either include biases with their own norm or set bias directions to zero,
+* same rule across all regimes.
+
+That gives cleaner comparisons than raw random directions.
 

@@ -145,7 +145,7 @@ class CheckpointManager:
 
         self.best_value = value
         return self.save(
-            name=f"best_{self.monitor}.pt",
+            name=f"best_val_{self.monitor}.pt",
             model=model,
             optimizer=optimizer,
             epoch=epoch,
@@ -250,7 +250,7 @@ class Trainer:
                     )
 
             last_path = self.checkpoints.save(
-                name="last.pt",
+                name="final.pt",
                 model=self.model,
                 optimizer=self.optimizer,
                 epoch=epoch,
