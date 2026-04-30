@@ -22,7 +22,6 @@ class SparseFeatureDecoder(nn.Module):
         self,
         latent_dim: int,
         image_shape: tuple[int, int, int],
-        anchor_dim: int,
         feature_hidden_dim: int = 16,
         gate_temperature: float = 1.0,
         activation: type[nn.Module] = nn.ReLU,
@@ -31,13 +30,6 @@ class SparseFeatureDecoder(nn.Module):
 
         if latent_dim <= 0:
             raise ValueError("latent_dim must be > 0")
-        if anchor_dim <= 0:
-            raise ValueError("SparseVAE requires anchor_dim > 0")
-        if anchor_dim % latent_dim != 0:
-            raise ValueError(
-                f"anchor_dim must be divisible by latent_dim, got anchor_dim={anchor_dim} "
-                f"and latent_dim={latent_dim}"
-            )
         if feature_hidden_dim <= 0:
             raise ValueError("feature_hidden_dim must be > 0")
         if gate_temperature <= 0.0:
@@ -45,7 +37,6 @@ class SparseFeatureDecoder(nn.Module):
 
         self.latent_dim = latent_dim
         self.image_shape = image_shape
-        self.anchor_dim = anchor_dim
         self.feature_hidden_dim = feature_hidden_dim
         self.gate_temperature = float(gate_temperature)
 
@@ -63,42 +54,17 @@ class SparseFeatureDecoder(nn.Module):
             torch.empty(self.image_num_pixels, feature_hidden_dim)
         )
         self.image_output_bias = nn.Parameter(torch.zeros(self.image_num_pixels))
-        self.anchor_output_weight = nn.Parameter(
-            torch.empty(anchor_dim, feature_hidden_dim)
-        )
-        self.anchor_output_bias = nn.Parameter(torch.zeros(anchor_dim))
-
-        anchors_per_latent = anchor_dim // latent_dim
-        anchor_latent_idx = torch.arange(anchor_dim) // anchors_per_latent
-        anchor_gates = torch.zeros(anchor_dim, latent_dim)
-        anchor_gates[torch.arange(anchor_dim), anchor_latent_idx] = 1.0
-        self.register_buffer("anchor_gates", anchor_gates)
 
         self.activation = activation()
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.normal_(self.gate_logits, mean=-1.0, std=0.01)
+        nn.init.normal_(self.gate_logits, mean=-3.0, std=0.01)
         nn.init.xavier_uniform_(self.hidden_weight)
         nn.init.xavier_uniform_(self.image_output_weight)
-        nn.init.xavier_uniform_(self.anchor_output_weight)
 
     def image_gates(self) -> Tensor:
         return torch.sigmoid(self.gate_logits / self.gate_temperature)
-
-    def _decode_features(
-        self,
-        z: Tensor,
-        gates: Tensor,
-        output_weight: Tensor,
-        output_bias: Tensor,
-    ) -> Tensor:
-        # Equivalent to applying each feature's gate to z before the shallow
-        # decoder, without materializing [B, F, K] masked latents.
-        effective_hidden = gates[:, None, :] * self.hidden_weight[None, :, :]
-        hidden = torch.einsum("bk,fhk->bfh", z, effective_hidden)
-        hidden = self.activation(hidden + self.hidden_bias[None, None, :])
-        return torch.einsum("bfh,fh->bf", hidden, output_weight) + output_bias
 
     def forward(self, z: Tensor) -> Reconstruction:
         if z.ndim != 2 or z.shape[1] != self.latent_dim:
@@ -107,23 +73,61 @@ class SparseFeatureDecoder(nn.Module):
             )
 
         b = z.shape[0]
-        img_flat = self._decode_features(
-            z=z,
-            gates=self.image_gates(),
-            output_weight=self.image_output_weight,
-            output_bias=self.image_output_bias,
-        )
-        anchor_mean = self._decode_features(
-            z=z,
-            gates=self.anchor_gates,
-            output_weight=self.anchor_output_weight,
-            output_bias=self.anchor_output_bias,
-        )
+        gates = self.image_gates() # [F, K]
 
-        return Reconstruction(
-            img_logits=img_flat.reshape(b, *self.image_shape),
-            anchor_mean=anchor_mean,
-        )
+        # Equivalent to applying each feature's gate to z before the shallow
+        # decoder, without materializing [B, F, K] masked latents.
+        effective_hidden = gates[:, None, :] * self.hidden_weight[None, :, :]
+        hidden = torch.einsum("bk,fhk->bfh", z, effective_hidden)
+        hidden = self.activation(hidden + self.hidden_bias[None, None, :])
+        img_flat = torch.einsum("bfh,fh->bf", hidden, output_weight) + output_bias
+        img_flat = img_flat + self.image_output_bias
+
+        return img_flat.reshape(b, *self.image_shape)
+
+class HardAnchorDecoder(nn.Module):
+    """
+    Clean engineered anchors.
+
+    For anchor ordering:
+      [z0_a0, z0_a1, z1_a0, z1_a1, ...]
+
+    Each anchor depends only on one latent coordinate.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        anchor_dim: int,
+        hidden_dim: int = 16,
+        activation: type[nn.Module] = nn.ReLU,
+    ) -> None:
+        super().__init__()
+
+        if anchor_dim <= 0:
+            raise ValueError("anchor_dim must be > 0")
+        if anchor_dim % latent_dim != 0:
+            raise ValueError("anchor_dim must be divisible by latent_dim")
+
+        self.latent_dim = latent_dim
+        self.anchor_dim = anchor_dim
+        self.anchors_per_latent = anchor_dim // latent_dim
+
+        self.decoders = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(1, hidden_dim),
+                activation(),
+                nn.Linear(hidden_dim, self.anchors_per_latent),
+            )
+            for _ in range(latent_dim)
+        ])
+
+    def forward(self, z: Tensor) -> Tensor:
+        pieces = []
+        for k, decoder in enumerate(self.decoders):
+            zk = z[:, k:k + 1]
+            pieces.append(decoder(zk))
+        return torch.cat(pieces, dim=1)
 
 
 class SparseVAE(BaseVAE):
@@ -144,6 +148,7 @@ class SparseVAE(BaseVAE):
         anchor_dim: int,
         sparse_lambda: float = 1e-3,
         feature_hidden_dim: int = 16,
+        anchor_hidden_dim: int = 16,
         gate_temperature: float = 1.0,
         activation: type[nn.Module] = nn.ReLU,
     ) -> None:
@@ -174,8 +179,17 @@ class SparseVAE(BaseVAE):
             activation=activation,
         )
 
+        self.anchor_decoder = HardAnchorDecoder(
+            latent_dim=latent_dim,
+            anchor_dim=anchor_dim,
+            hidden_dim=anchor_hidden_dim,
+            activation=activation,
+        )
+
     def decode(self, decoder_latent: Tensor, batch: Batch) -> Reconstruction:
-        return self.decoder(decoder_latent)
+        img_logits = self.image_decoder(decoder_latent)
+        anchor_mean = self.anchor_decoder(decoder_latent)
+        return Reconstruction(img_logits, anchor_mean=anchor_mean)
 
     def compute_aux_losses(
         self,
@@ -183,7 +197,10 @@ class SparseVAE(BaseVAE):
         out: ModelOutput,
     ) -> dict[str, Tensor]:
         del batch, out
-        gate_penalty = self.decoder.image_gates().abs().mean()
+        gates = self.image_decoder.image_gates()
         return {
             "sparsity": gate_penalty * self.sparse_lambda,
         }
+
+    def current_image_gates(self) -> Tensor:
+        return self.image_decoder.imgae_gates().detach()

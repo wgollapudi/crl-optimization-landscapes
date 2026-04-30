@@ -73,7 +73,7 @@ def resolve_outdir(args: argparse.Namespace) -> Path:
     regime = infer_regime_name(args.data_path)
     cfg_hash = make_config_hash(args)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("runs") / f"{regime}_hash-{cfg_hash}_time-{timestamp}"
+    return Path("runs") / f"{regime}" / f"hash-{cfg_hash}_time-{timestamp}"
 
 
 def parse_args() -> argparse.Namespace:

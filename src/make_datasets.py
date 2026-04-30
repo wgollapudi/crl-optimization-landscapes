@@ -234,31 +234,57 @@ def build_class_tuples(
 def make_anchor_features(
     z: np.ndarray,
     anchors_per_latent: int = 2,
-    noise_std: float = 0.0,
+    noise_std: float = 0.03,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """
-    Build engineered anchor features for the sparse-identifiable regime.
+    Build enginnered anchor featrues. (to satisfy sparse identifibility theorem in Moran et. at. 2022)
 
-    For latent_dim=4 and anchors_per_latent=2, this returns columns
-    [z0, z0, z1, z1, z2, z2, z3, z3].  Dataset generation passes
-    latents_quantized_continuous so anchors match the rendered dSprites factors.
+    Output order:
+      z0_anchor0, z0_anchor1, ..., z1_anchor0, z1_anchor1, ...
+
+    Each anchor depends on exactly one latent coordinate.
     """
     if z.ndim != 2:
         raise ValueError(f"z must have shape [N, latent_dim], got {z.shape}")
     if anchors_per_latent <= 0:
-        raise ValueError("anchors_per_latent must be > 0")
+        raise ValueError("identifiability requires at least two anchors per latent")
     if noise_std < 0.0:
         raise ValueError("noise_std must be >= 0")
 
-    anchors = np.repeat(z.astype(np.float32, copy=False), anchors_per_latent, axis=1)
-    if noise_std > 0.0:
-        if rng is None:
-            rng = np.random.default_rng()
-        noise = rng.normal(loc=0.0, scale=noise_std, size=anchors.shape)
-        anchors = anchors + noise.astype(np.float32)
-    return anchors.astype(np.float32, copy=False)
+    if rng is None:
+        rng = np.random.default_rng()
 
+    funcs = [
+        lambda x: x,
+        lambda x: np.tanh(1.5 * x),
+        lambda x: x**2 + 0.5 * x,
+        lambda x: np.sin(np.pi * x),
+        lambda x: np.sign(x) * np.sqrt(np.abs(x) + 1e-6),
+        lambda x: x**3,
+    ]
+
+    anchors: list[np.ndarray] = []
+
+    for j in range(z.shape[1]):
+        zj = z[:, j].astype(np.float32, copy=False)
+
+        for a in range(anchors_per_latent):
+            f = funcs[a % len(funcs)]
+            anchor = f(zj).astype(np.float32, copy=False)
+            anchors.append(anchor)
+
+    out = np.stack(anchors, axis=1).astype(np.float32, copy=False)
+
+    # Standardize each anchor dimension so loss scales are comparable.
+    mean = out.mean(axis=0, keepdims=True)
+    std = out.std(axis=0, keepdims=True)
+    out = (out - mean) / (std + 1e-6)
+
+    if noise_std > 0.0:
+        out += rng.normal(0.0, noise_std, size=out.shape).astype(np.float32)
+
+    return out
 
 def add_anchor_features(
     arrays: MutableMapping[str, np.ndarray],
