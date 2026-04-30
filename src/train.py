@@ -17,7 +17,9 @@ from engine import CheckpointManager, Trainer
 from experiment_logging import ExperimentLogger
 from losses import AnchorLossConfig, LinearWarmupSchedule, VAELoss
 from models.common import Encoder
+from models.causal_discrepancy_vae import CausalDiscrepancyVAE
 from models.plain_vae import PlainVAE
+from models.sparse_vae import SparseVAE
 
 
 def set_seed(seed: int) -> None:
@@ -44,9 +46,15 @@ def make_config_hash(args: argparse.Namespace) -> str:
     relevant = {
         "data_path": str(args.data_path),
         "batch_size": args.batch_size,
+        "use_anchor_features": args.use_anchor_features,
+        "model_name": args.model_name,
         "latent_dim": args.latent_dim,
         "hidden_dim": args.hidden_dim,
         "anchor_dim": args.anchor_dim,
+        "sparse_lambda": args.sparse_lambda,
+        "mmd_weight": args.mmd_weight,
+        "graph_l1_weight": args.graph_l1_weight,
+        "num_intervention_variants": args.num_intervention_variants,
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "grad_clip_norm": args.grad_clip_norm,
@@ -79,12 +87,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-anchor-features", action="store_true")
 
     # Model
+    parser.add_argument(
+        "--model-name",
+        choices=["plain", "sparse", "causal_discrepancy"],
+        default="plain",
+    )
     parser.add_argument("--latent-dim", type=int, default=4)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--anchor-dim", type=int, default=0)
     parser.add_argument("--image-channels", type=int, default=1)
     parser.add_argument("--image-height", type=int, default=64)
     parser.add_argument("--image-width", type=int, default=64)
+    parser.add_argument("--sparse-lambda", type=float, default=1e-3)
+    parser.add_argument("--mmd-weight", type=float, default=1.0)
+    parser.add_argument("--graph-l1-weight", type=float, default=1e-3)
+    parser.add_argument("--num-intervention-variants", type=int, default=2)
 
     # Optimization
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -104,6 +121,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def normalize_model_args(args: argparse.Namespace) -> None:
+    if args.model_name == "sparse":
+        if not args.use_anchor_features:
+            raise ValueError("--model-name sparse requires --use-anchor-features")
+        if args.anchor_dim == 0:
+            args.anchor_dim = 2 * args.latent_dim
+
+    if args.model_name == "causal_discrepancy":
+        if args.use_anchor_features:
+            raise ValueError(
+                "--model-name causal_discrepancy is image-only; do not pass "
+                "--use-anchor-features"
+            )
+        if args.anchor_dim != 0:
+            raise ValueError(
+                "--model-name causal_discrepancy requires --anchor-dim 0"
+            )
+
+
 def build_configs(args: argparse.Namespace) -> tuple[DataConfig, ModelConfig, OptimConfig, RunConfig]:
     data_cfg = DataConfig(
         path=args.data_path,
@@ -121,6 +157,11 @@ def build_configs(args: argparse.Namespace) -> tuple[DataConfig, ModelConfig, Op
         decoder_type="mlp",
         obs_distribution="bernoulli",
         anchor_dim=args.anchor_dim,
+        model_name=args.model_name,
+        sparse_lambda=args.sparse_lambda,
+        mmd_weight=args.mmd_weight,
+        graph_l1_weight=args.graph_l1_weight,
+        num_intervention_variants=args.num_intervention_variants,
     )
 
     optim_cfg = OptimConfig(
@@ -143,8 +184,65 @@ def build_configs(args: argparse.Namespace) -> tuple[DataConfig, ModelConfig, Op
     return data_cfg, model_cfg, optim_cfg, run_cfg
 
 
+def validate_data_summary(model_cfg: ModelConfig, data_summary: dict) -> None:
+    if model_cfg.model_name == "sparse":
+        dataset_anchor_dim = data_summary.get("anchor_dim")
+        if dataset_anchor_dim is None:
+            raise ValueError(
+                "SparseVAE requires anchor features in the dataset; regenerate data "
+                "with anchor_features and pass --use-anchor-features"
+            )
+        if int(dataset_anchor_dim) != model_cfg.anchor_dim:
+            raise ValueError(
+                f"--anchor-dim={model_cfg.anchor_dim} does not match dataset "
+                f"anchor_dim={dataset_anchor_dim}"
+            )
+
+
+def build_model(model_cfg: ModelConfig) -> torch.nn.Module:
+    encoder = Encoder(
+        image_shape=model_cfg.image_shape,
+        latent_dim=model_cfg.latent_dim,
+        hidden_dim=model_cfg.hidden_dim,
+        anchor_dim=model_cfg.anchor_dim,
+    )
+
+    if model_cfg.model_name == "plain":
+        return PlainVAE(
+            encoder=encoder,
+            latent_dim=model_cfg.latent_dim,
+            image_shape=model_cfg.image_shape,
+            hidden_dim=model_cfg.hidden_dim,
+            anchor_dim=model_cfg.anchor_dim,
+        )
+
+    if model_cfg.model_name == "sparse":
+        return SparseVAE(
+            encoder=encoder,
+            latent_dim=model_cfg.latent_dim,
+            image_shape=model_cfg.image_shape,
+            hidden_dim=model_cfg.hidden_dim,
+            anchor_dim=model_cfg.anchor_dim,
+            sparse_lambda=model_cfg.sparse_lambda,
+        )
+
+    if model_cfg.model_name == "causal_discrepancy":
+        return CausalDiscrepancyVAE(
+            encoder=encoder,
+            latent_dim=model_cfg.latent_dim,
+            image_shape=model_cfg.image_shape,
+            hidden_dim=model_cfg.hidden_dim,
+            num_intervention_variants=model_cfg.num_intervention_variants,
+            mmd_weight=model_cfg.mmd_weight,
+            graph_l1_weight=model_cfg.graph_l1_weight,
+        )
+
+    raise ValueError(f"Unknown model_name: {model_cfg.model_name}")
+
+
 def main() -> None:
     args = parse_args()
+    normalize_model_args(args)
     args.outdir = resolve_outdir(args)
     data_cfg, model_cfg, optim_cfg, run_cfg = build_configs(args)
 
@@ -157,21 +255,9 @@ def main() -> None:
     dm = DataModule(data_cfg, include_metadata=False)
     dm.setup()
     data_summary = dm.summary()
+    validate_data_summary(model_cfg, data_summary)
 
-    encoder = Encoder(
-        image_shape=model_cfg.image_shape,
-        latent_dim=model_cfg.latent_dim,
-        hidden_dim=model_cfg.hidden_dim,
-        anchor_dim=model_cfg.anchor_dim,
-    )
-
-    model = PlainVAE(
-        encoder=encoder,
-        latent_dim=model_cfg.latent_dim,
-        image_shape=model_cfg.image_shape,
-        hidden_dim=model_cfg.hidden_dim,
-        anchor_dim=model_cfg.anchor_dim,
-    )
+    model = build_model(model_cfg)
 
     optimizer = Adam(
         model.parameters(),
@@ -205,7 +291,7 @@ def main() -> None:
             "model": model_cfg,
             "optim": optim_cfg,
             "run": run_cfg,
-            "model_name": "PlainVAE",
+            "model_class": model.__class__.__name__,
         }
     )
 

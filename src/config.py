@@ -1,4 +1,6 @@
 # config.py
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +21,11 @@ class ModelConfig:
     decoder_type: str      # "mlp" or "cnn"
     obs_distribution: str  # "bernoulli" for dSprites
     anchor_dim: int = 0
+    model_name: str = "plain"
+    sparse_lambda: float = 1e-3
+    mmd_weight: float = 1.0
+    graph_l1_weight: float = 1e-3
+    num_intervention_variants: int = 2
 
 @dataclass
 class OptimConfig:

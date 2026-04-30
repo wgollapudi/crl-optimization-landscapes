@@ -20,6 +20,7 @@ Each output file contains:
   - latents_quantized_continuous
   - orientation_cos
   - orientation_sin
+  - anchor_features
   - env_id
   - intervention_target
   - intervention_variant
@@ -228,6 +229,50 @@ def build_class_tuples(
         z_quantized_cont[:, j] = quantizer.normalize(name, snapped)
 
     return class_tuples, values, z_quantized_cont
+
+
+def make_anchor_features(
+    z: np.ndarray,
+    anchors_per_latent: int = 2,
+    noise_std: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """
+    Build engineered anchor features for the sparse-identifiable regime.
+
+    For latent_dim=4 and anchors_per_latent=2, this returns columns
+    [z0, z0, z1, z1, z2, z2, z3, z3].  Dataset generation passes
+    latents_quantized_continuous so anchors match the rendered dSprites factors.
+    """
+    if z.ndim != 2:
+        raise ValueError(f"z must have shape [N, latent_dim], got {z.shape}")
+    if anchors_per_latent <= 0:
+        raise ValueError("anchors_per_latent must be > 0")
+    if noise_std < 0.0:
+        raise ValueError("noise_std must be >= 0")
+
+    anchors = np.repeat(z.astype(np.float32, copy=False), anchors_per_latent, axis=1)
+    if noise_std > 0.0:
+        if rng is None:
+            rng = np.random.default_rng()
+        noise = rng.normal(loc=0.0, scale=noise_std, size=anchors.shape)
+        anchors = anchors + noise.astype(np.float32)
+    return anchors.astype(np.float32, copy=False)
+
+
+def add_anchor_features(
+    arrays: MutableMapping[str, np.ndarray],
+    anchors_per_latent: int,
+    noise_std: float,
+    rng: np.random.Generator,
+) -> None:
+    arrays["anchor_features"] = make_anchor_features(
+        arrays["latents_quantized_continuous"],
+        anchors_per_latent=anchors_per_latent,
+        noise_std=noise_std,
+        rng=rng,
+    )
+
 
 def make_overlap_grid(
     quantizer: Quantizer,
@@ -497,6 +542,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
     )
+    parser.add_argument(
+        "--anchors-per-latent",
+        type=int,
+        default=2,
+        help="Number of engineered anchor features to repeat for each latent factor",
+    )
+    parser.add_argument(
+        "--anchor-noise-std",
+        type=float,
+        default=0.0,
+        help="Optional Gaussian noise std added to engineered anchor features",
+    )
     return parser.parse_args()
 
 
@@ -535,12 +592,24 @@ def main() -> None:
 
     try:
         observational = generate_observational(quantizer, scm, shape_class, args.n_obs)
+        add_anchor_features(
+            observational,
+            anchors_per_latent=args.anchors_per_latent,
+            noise_std=args.anchor_noise_std,
+            rng=rng,
+        )
         add_images(table, observational)
 
         overlap_support = make_overlap_grid(
             quantizer,
             shape_class,
             args.overlap_grid_budget,
+        )
+        add_anchor_features(
+            overlap_support,
+            anchors_per_latent=args.anchors_per_latent,
+            noise_std=args.anchor_noise_std,
+            rng=rng,
         )
         add_images(table, overlap_support)
 
@@ -551,6 +620,12 @@ def main() -> None:
             args.n_obs,
             args.n_per_intervention,
         )
+        add_anchor_features(
+            single_node,
+            anchors_per_latent=args.anchors_per_latent,
+            noise_std=args.anchor_noise_std,
+            rng=rng,
+        )
         add_images(table, single_node)
 
         two_per_node = generate_two_interventions_per_node(
@@ -559,6 +634,12 @@ def main() -> None:
             shape_class,
             args.n_obs,
             args.n_per_intervention,
+        )
+        add_anchor_features(
+            two_per_node,
+            anchors_per_latent=args.anchors_per_latent,
+            noise_std=args.anchor_noise_std,
+            rng=rng,
         )
         add_images(table, two_per_node)
 
@@ -577,6 +658,12 @@ def main() -> None:
         log(f"adjacency: {scm.A.tolist()}", log_fh)
         log(f"noise_scales: {scm.noise_scales.tolist()}", log_fh)
         log(f"clip: {scm.clip}", log_fh)
+        log("", log_fh)
+
+        log("ANCHORS:", log_fh)
+        log(f"anchors_per_latent: {args.anchors_per_latent}", log_fh)
+        log(f"anchor_noise_std: {args.anchor_noise_std}", log_fh)
+        log(f"anchor_dim: {observational['anchor_features'].shape[1]}", log_fh)
         log("", log_fh)
 
         log("REGIMES:", log_fh)
