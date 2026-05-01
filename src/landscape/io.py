@@ -16,9 +16,6 @@ def ensure_dir(path: str | Path) -> Path:
 def seed_dir(root: str | Path, regime: str, run_id: str, checkpoint_kind: str) -> Path:
     return ensure_dir(Path(root) / regime / run_id / checkpoint_kind)
 
-def seed_probe_path(root: str | Path, regime: str, run_id: str, checkpoint_kind: str,
-                    probe_name: str,) -> Path:
-    return seed_dir(root, regime, run_id, checkpoint_kind) / f"{probe_name}.npz"
 
 def pair_dir(root: str | Path, regime: str, checkpoint_kind: str) -> Path:
     return ensure_dir(Path(root) / regime / "pairs" / checkpoint_kind)
@@ -146,30 +143,30 @@ def checkpoint_path(
         f"Unknown checkpoint_kind={checkpoint_kind!r}; expected 'final' or 'best_val'"
     )
 
-def pair_name(seed_i: int, seed_j: int, probe_name: str) -> str:
-    a, b = sorted((seed_i, seed_j))
-    return f"seed_{a}__seed_{b}__{probe_name}.npz"
+def pair_name(run_index_i: int, run_index_j: int, probe_name: str) -> str:
+    a, b = sorted((run_index_i, run_index_j))
+    return f"run_{a}__run_{b}__{probe_name}.npz"
 
 
 def seed_probe_path(
     root: str | Path,
     regime: str,
-    seed: int,
+    run_id: str,
     checkpoint_kind: str,
     probe_name: str,
 ) -> Path:
-    return seed_dir(root, regime, seed, checkpoint_kind) / f"{probe_name}.npz"
+    return seed_dir(root, regime, run_id, checkpoint_kind) / f"{probe_name}.npz"
 
 
 def pair_probe_path(
     root: str | Path,
     regime: str,
-    seed_i: int,
-    seed_j: int,
+    run_index_i: int,
+    run_index_j: int,
     checkpoint_kind: str,
     probe_name: str,
 ) -> Path:
-    return pair_dir(root, regime, checkpoint_kind) / pair_name(seed_i, seed_j, probe_name)
+    return pair_dir(root, regime, checkpoint_kind) / pair_name(run_index_i, run_index_j, probe_name)
 
 
 def subset_path(

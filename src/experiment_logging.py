@@ -208,7 +208,13 @@ class ExperimentLogger:
     def _format_float(self, value: float | int | None, digits: int = 4) -> str:
         if value is None:
             return "n/a"
-        return f"{float(value):.{digits}f}"
+        value = float(value)
+        threshold = 10.0 ** (-digits)
+        if 0.0 < abs(value) < threshold:
+            if value < 0.0:
+                return f"<0.{'0' * (digits - 1)}"
+            return f">0.{'0' * (digits - 1)}"
+        return f"{value:.{digits}f}"
 
     def _extract_latent_vector(
         self,

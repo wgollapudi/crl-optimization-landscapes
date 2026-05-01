@@ -23,12 +23,18 @@ from landscape.io import (
 )
 from landscape.params import clone_param_vector
 from landscape.probes import (
+    curve_result_to_dict,
+    gradient_norm,
+    gradient_result_to_dict,
+    hessian_result_to_dict,
+    hessian_summary,
     interpolation_curve,
     interpolation_result_to_dict,
     perturbation_result_to_dict,
     perturbation_sharpness,
+    slice2d_result_to_dict,
     slice_1d_random,
-    slice_1d_result_to_dict,
+    slice_2d_random,
 )
 from landscape.subsets import ensure_subset_loader
 
@@ -83,6 +89,39 @@ def resolve_checkpoint_kinds(kind: str) -> list[str]:
             f"Unknown checkpoint kind {kind!r}; expected all or one of {sorted(CHECKPOINT_KINDS)}"
         )
     return [kind]
+
+
+PROBE_ALIASES: dict[str, tuple[str, ...]] = {
+    "local": ("endpoint", "perturbation", "slice1d"),
+    "expensive": ("gradnorm", "hessian", "slice2d"),
+    "all": ("endpoint", "perturbation", "slice1d", "pairwise"),
+}
+
+
+PROBE_NAMES = {
+    "endpoint",
+    "perturbation",
+    "slice1d",
+    "slice2d",
+    "gradnorm",
+    "hessian",
+    "pairwise",
+}
+
+
+def resolve_probes(probes: list[str]) -> set[str]:
+    resolved: set[str] = set()
+    for probe in probes:
+        if probe in PROBE_ALIASES:
+            resolved.update(PROBE_ALIASES[probe])
+        elif probe in PROBE_NAMES:
+            resolved.add(probe)
+        else:
+            raise ValueError(
+                f"Unknown probe {probe!r}; expected aliases "
+                f"{sorted(PROBE_ALIASES)} or probes {sorted(PROBE_NAMES)}"
+            )
+    return resolved
 
 
 def checkpoint_path_for_run(run: Run, checkpoint_kind: str) -> Path:
@@ -328,7 +367,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--selection-seed", type=int, default=0)
     p.add_argument("--run-filter", action="append", default=[])
 
-    p.add_argument("--probes", nargs="+", choices=["all", "local", "pairwise"], default=["all"])
+    p.add_argument(
+        "--probes",
+        nargs="+",
+        choices=sorted(PROBE_NAMES | set(PROBE_ALIASES)),
+        default=["all"],
+    )
 
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--batch-size", type=int, default=256)
@@ -354,6 +398,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-pairs", type=int, default=100)
     p.add_argument("--pair-seed", type=int, default=0)
 
+    p.add_argument("--grad-components", nargs="+", default=["total", "recon_img"])
+
+    p.add_argument("--hessian-components", nargs="+", default=["total", "recon_img"])
+    p.add_argument("--hessian-power-iters", type=int, default=20)
+    p.add_argument("--hessian-power-restarts", type=int, default=1)
+    p.add_argument("--hessian-trace-samples", type=int, default=20)
+    p.add_argument("--hessian-max-batches", type=int, default=3)
+
+    p.add_argument("--slice2d-points", type=int, default=21)
+    p.add_argument("--slice2d-alpha-max", type=float, default=1.0)
+    p.add_argument("--slice2d-max-runs", type=int, default=3)
+
     p.add_argument("--overwrite", action="store_true")
 
     return p.parse_args()
@@ -371,123 +427,209 @@ def run_one_checkpoint_kind(
     loss_fn: VAELoss,
     alphas_slice: np.ndarray,
     alphas_interp: np.ndarray,
+    alphas_slice2d: np.ndarray,
     device: torch.device,
 ) -> None:
-    do_all = "all" in args.probes
-    do_local = do_all or "local" in args.probes
-    do_pairwise = do_all or "pairwise" in args.probes
-
+    probes = resolve_probes(args.probes)
     loaded: dict[int, tuple[Run, Path, torch.Tensor, list]] = {}
 
-    if do_local or do_pairwise:
-        for run_index, run in enumerate(runs):
-            ckpt = checkpoint_path_for_run(run, checkpoint_kind)
-            model = load_model_from_checkpoint(ckpt, device=device)
-            theta, specs = clone_param_vector(model)
+    for run_index, run in enumerate(runs):
+        ckpt = checkpoint_path_for_run(run, checkpoint_kind)
+        model = load_model_from_checkpoint(ckpt, device=device)
+        theta, specs = clone_param_vector(model)
 
-            if do_local:
-                endpoint_path = seed_probe_path(
-                    args.outdir, args.regime, run.run_id, checkpoint_kind, "endpoint"
+        if "endpoint" in probes:
+            endpoint_path = seed_probe_path(args.outdir, args.regime, run.run_id, checkpoint_kind, "endpoint")
+            if should_skip(endpoint_path, args.overwrite):
+                print(f"[skip] {endpoint_path}")
+            else:
+                endpoints = endpoint_metrics(
+                    model=model,
+                    loss_fn=loss_fn,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    device=device,
+                    max_batches=args.max_batches,
                 )
+                save_npz(
+                    endpoint_path,
+                    regime=args.regime,
+                    run_index=run_index,
+                    run_id=run.run_id,
+                    seed=-1 if run.seed is None else run.seed,
+                    checkpoint=str(ckpt),
+                    checkpoint_kind=checkpoint_kind,
+                    probe_name="endpoint",
+                    num_params=int(theta.numel()),
+                    param_norm=float(torch.linalg.vector_norm(theta).item()),
+                    **endpoints,
+                )
+                print(f"[write] {endpoint_path}")
 
-                if should_skip(endpoint_path, args.overwrite):
-                    print(f"[skip] {endpoint_path}")
+        for split_name, loader in [("train", train_loader), ("val", val_loader)]:
+            if "perturbation" in probes:
+                pert_path = seed_probe_path(args.outdir, args.regime, run.run_id, checkpoint_kind, f"perturbation_{split_name}")
+                if should_skip(pert_path, args.overwrite):
+                    print(f"[skip] {pert_path}")
                 else:
-                    endpoints = endpoint_metrics(
+                    pert = perturbation_sharpness(
                         model=model,
+                        theta=theta,
+                        specs=specs,
                         loss_fn=loss_fn,
-                        train_loader=train_loader,
-                        val_loader=val_loader,
+                        loader=loader,
                         device=device,
+                        radii=args.radii,
+                        directions_per_radius=args.directions_per_radius,
+                        direction_seed=run.seed if run.seed is not None else run_index,
                         max_batches=args.max_batches,
+                        normalization="layerwise",
                     )
                     save_npz(
-                        endpoint_path,
+                        pert_path,
+                        regime=args.regime,
                         run_index=run_index,
                         run_id=run.run_id,
                         seed=-1 if run.seed is None else run.seed,
                         checkpoint=str(ckpt),
                         checkpoint_kind=checkpoint_kind,
-                        **endpoints,
+                        probe_name="perturbation",
+                        split=split_name,
+                        **perturbation_result_to_dict(pert),
                     )
-                    print(f"[write] {endpoint_path}")
+                    print(f"[write] {pert_path}")
 
-                for split_name, loader in [("train", train_loader), ("val", val_loader)]:
-                    pert_path = seed_probe_path(
-                        args.outdir,
-                        args.regime,
-                        run.run_id,
-                        checkpoint_kind,
-                        f"perturbation_{split_name}",
+            if "slice1d" in probes:
+                slice_path = seed_probe_path(args.outdir, args.regime, run.run_id, checkpoint_kind, f"slice1d_random_{split_name}")
+                if should_skip(slice_path, args.overwrite):
+                    print(f"[skip] {slice_path}")
+                else:
+                    sl = slice_1d_random(
+                        model=model,
+                        theta=theta,
+                        specs=specs,
+                        loss_fn=loss_fn,
+                        loader=loader,
+                        device=device,
+                        alphas=alphas_slice,
+                        direction_seed=run.seed if run.seed is not None else run_index,
+                        max_batches=args.max_batches,
+                        normalization="layerwise",
                     )
-                    if should_skip(pert_path, args.overwrite):
-                        print(f"[skip] {pert_path}")
-                    else:
-                        pert = perturbation_sharpness(
-                            model=model,
-                            theta=theta,
-                            specs=specs,
-                            loss_fn=loss_fn,
-                            loader=loader,
-                            device=device,
-                            radii=args.radii,
-                            directions_per_radius=args.directions_per_radius,
-                            direction_seed=run.seed if run.seed is not None else run_index,
-                            max_batches=args.max_batches,
-                            normalization="layerwise",
-                        )
-                        save_npz(
-                            pert_path,
-                            run_index=run_index,
-                            run_id=run.run_id,
-                            seed=-1 if run.seed is None else run.seed,
-                            checkpoint=str(ckpt),
-                            checkpoint_kind=checkpoint_kind,
-                            split=split_name,
-                            **perturbation_result_to_dict(pert),
-                        )
-                        print(f"[write] {pert_path}")
-
-                    slice_path = seed_probe_path(
-                        args.outdir,
-                        args.regime,
-                        run.run_id,
-                        checkpoint_kind,
-                        f"slice1d_random_{split_name}",
+                    save_npz(
+                        slice_path,
+                        regime=args.regime,
+                        run_index=run_index,
+                        run_id=run.run_id,
+                        seed=-1 if run.seed is None else run.seed,
+                        checkpoint=str(ckpt),
+                        checkpoint_kind=checkpoint_kind,
+                        probe_name="slice1d",
+                        split=split_name,
+                        **curve_result_to_dict(sl),
                     )
-                    if should_skip(slice_path, args.overwrite):
-                        print(f"[skip] {slice_path}")
-                    else:
-                        sl = slice_1d_random(
-                            model=model,
-                            theta=theta,
-                            specs=specs,
-                            loss_fn=loss_fn,
-                            loader=loader,
-                            device=device,
-                            alphas=alphas_slice,
-                            direction_seed=run.seed if run.seed is not None else run_index,
-                            max_batches=args.max_batches,
-                            normalization="layerwise",
-                        )
-                        save_npz(
-                            slice_path,
-                            run_index=run_index,
-                            run_id=run.run_id,
-                            seed=-1 if run.seed is None else run.seed,
-                            checkpoint=str(ckpt),
-                            checkpoint_kind=checkpoint_kind,
-                            split=split_name,
-                            **slice_1d_result_to_dict(sl),
-                        )
-                        print(f"[write] {slice_path}")
+                    print(f"[write] {slice_path}")
 
-            loaded[run_index] = (run, ckpt, theta.detach().cpu(), specs)
-            del model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if "gradnorm" in probes:
+                grad_path = seed_probe_path(args.outdir, args.regime, run.run_id, checkpoint_kind, f"gradnorm_{split_name}")
+                if should_skip(grad_path, args.overwrite):
+                    print(f"[skip] {grad_path}")
+                else:
+                    grad = gradient_norm(
+                        model=model,
+                        theta=theta,
+                        specs=specs,
+                        loss_fn=loss_fn,
+                        loader=loader,
+                        device=device,
+                        components=args.grad_components,
+                        max_batches=args.max_batches,
+                    )
+                    save_npz(
+                        grad_path,
+                        regime=args.regime,
+                        run_index=run_index,
+                        run_id=run.run_id,
+                        seed=-1 if run.seed is None else run.seed,
+                        checkpoint=str(ckpt),
+                        checkpoint_kind=checkpoint_kind,
+                        probe_name="gradnorm",
+                        split=split_name,
+                        **gradient_result_to_dict(grad),
+                    )
+                    print(f"[write] {grad_path}")
 
-    if do_pairwise:
+            if "hessian" in probes:
+                hess_path = seed_probe_path(args.outdir, args.regime, run.run_id, checkpoint_kind, f"hessian_{split_name}")
+                if should_skip(hess_path, args.overwrite):
+                    print(f"[skip] {hess_path}")
+                else:
+                    hess = hessian_summary(
+                        model=model,
+                        theta=theta,
+                        specs=specs,
+                        loss_fn=loss_fn,
+                        loader=loader,
+                        device=device,
+                        components=args.hessian_components,
+                        power_iters=args.hessian_power_iters,
+                        power_restarts=args.hessian_power_restarts,
+                        trace_samples=args.hessian_trace_samples,
+                        max_batches=args.hessian_max_batches,
+                        seed=run.seed if run.seed is not None else run_index,
+                    )
+                    save_npz(
+                        hess_path,
+                        regime=args.regime,
+                        run_index=run_index,
+                        run_id=run.run_id,
+                        seed=-1 if run.seed is None else run.seed,
+                        checkpoint=str(ckpt),
+                        checkpoint_kind=checkpoint_kind,
+                        probe_name="hessian",
+                        split=split_name,
+                        **hessian_result_to_dict(hess),
+                    )
+                    print(f"[write] {hess_path}")
+
+            if "slice2d" in probes and run_index < args.slice2d_max_runs:
+                slice2d_path = seed_probe_path(args.outdir, args.regime, run.run_id, checkpoint_kind, f"slice2d_random_{split_name}")
+                if should_skip(slice2d_path, args.overwrite):
+                    print(f"[skip] {slice2d_path}")
+                else:
+                    sl2 = slice_2d_random(
+                        model=model,
+                        theta=theta,
+                        specs=specs,
+                        loss_fn=loss_fn,
+                        loader=loader,
+                        device=device,
+                        alphas=alphas_slice2d,
+                        betas=alphas_slice2d,
+                        direction_seed=run.seed if run.seed is not None else run_index,
+                        max_batches=args.max_batches,
+                        normalization="layerwise",
+                    )
+                    save_npz(
+                        slice2d_path,
+                        regime=args.regime,
+                        run_index=run_index,
+                        run_id=run.run_id,
+                        seed=-1 if run.seed is None else run.seed,
+                        checkpoint=str(ckpt),
+                        checkpoint_kind=checkpoint_kind,
+                        probe_name="slice2d",
+                        split=split_name,
+                        **slice2d_result_to_dict(sl2),
+                    )
+                    print(f"[write] {slice2d_path}")
+
+        loaded[run_index] = (run, ckpt, theta.detach().cpu(), specs)
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    if "pairwise" in probes:
         pairs = choose_pairs(runs=runs, max_pairs=args.max_pairs, pair_seed=args.pair_seed)
         run_to_index = {run.run_id: i for i, run in enumerate(runs)}
 
@@ -546,6 +688,7 @@ def run_one_checkpoint_kind(
 
                 save_npz(
                     interp_path,
+                    regime=args.regime,
                     run_index_i=idx_i,
                     run_index_j=idx_j,
                     run_id_i=run_i.run_id,
@@ -553,7 +696,9 @@ def run_one_checkpoint_kind(
                     seed_i=-1 if run_i.seed is None else run_i.seed,
                     seed_j=-1 if run_j.seed is None else run_j.seed,
                     checkpoint_i=str(ckpt_i),
+                    checkpoint_j=str(checkpoint_path_for_run(run_j, checkpoint_kind)),
                     checkpoint_kind=checkpoint_kind,
+                    probe_name="interpolation",
                     split=split_name,
                     **interpolation_result_to_dict(interp),
                 )
@@ -638,6 +783,7 @@ def main() -> None:
 
     alphas_slice = np.linspace(-args.slice_alpha_max, args.slice_alpha_max, args.slice_points)
     alphas_interp = np.linspace(0.0, 1.0, args.interp_points)
+    alphas_slice2d = np.linspace(-args.slice2d_alpha_max, args.slice2d_alpha_max, args.slice2d_points)
 
     for checkpoint_kind in checkpoint_kinds:
         print(f"[checkpoint-kind] {checkpoint_kind}")
@@ -652,6 +798,7 @@ def main() -> None:
             loss_fn=loss_fn,
             alphas_slice=alphas_slice,
             alphas_interp=alphas_interp,
+            alphas_slice2d=alphas_slice2d,
             device=device,
         )
 
