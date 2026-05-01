@@ -41,6 +41,17 @@ def infer_regime_name(data_path: Path) -> str:
     return "unknown"
 
 
+def infer_model_name(data_path: Path) -> str:
+    regime = infer_regime_name(data_path)
+    if regime == "regimeA":
+        return "plain"
+    if regime == "regimeB":
+        return "sparse"
+    if regime in {"regimeC", "regimeD"}:
+        return "causal_discrepancy"
+    return "plain"
+
+
 def make_config_hash(args: argparse.Namespace) -> str:
     relevant = {
         "data_path": str(args.data_path),
@@ -90,7 +101,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-name",
         choices=["plain", "sparse", "causal_discrepancy"],
-        default="plain",
+        default=None,
+        help="Model to train; inferred from dataset filename when omitted",
     )
     parser.add_argument("--latent-dim", type=int, default=4)
     parser.add_argument("--hidden-dim", type=int, default=256)
@@ -128,9 +140,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def normalize_model_args(args: argparse.Namespace) -> None:
+    if args.model_name is None:
+        args.model_name = infer_model_name(args.data_path)
+
     if args.model_name == "sparse":
-        if not args.use_anchor_features:
-            raise ValueError("--model-name sparse requires --use-anchor-features")
+        args.use_anchor_features = True
         if args.anchor_dim == 0:
             args.anchor_dim = 2 * args.latent_dim
 

@@ -67,6 +67,10 @@ SHAPE_NAME_TO_CLASS = {
     "heart": 2,
 }
 TAU = 2.0 * np.pi
+DEFAULT_DSPRITES_PATH = Path(
+    "data/raw/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz"
+)
+DEFAULT_OUTDIR = Path("data/crl_dsprites")
 
 
 def log(msg: str, fh=None) -> None:
@@ -529,8 +533,18 @@ def concat_piece_dicts(pieces: Sequence[Mapping[str, np.ndarray]]) -> Mapping[st
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dsprites", type=Path, required=True, help="Path to the raw dSprites NPZ file")
-    parser.add_argument("--outdir", type=Path, required=True, help="Output directory")
+    parser.add_argument(
+        "--dsprites",
+        type=Path,
+        default=DEFAULT_DSPRITES_PATH,
+        help=f"Path to the raw dSprites NPZ file (default: {DEFAULT_DSPRITES_PATH})",
+    )
+    parser.add_argument(
+        "--outdir",
+        type=Path,
+        default=DEFAULT_OUTDIR,
+        help=f"Output directory (default: {DEFAULT_OUTDIR})",
+    )
     parser.add_argument("--shape", choices=sorted(SHAPE_NAME_TO_CLASS), default="ellipse")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-obs", type=int, default=40000, help="Observational sample count")

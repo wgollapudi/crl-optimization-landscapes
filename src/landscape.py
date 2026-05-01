@@ -352,8 +352,13 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run landscape probes over discovered model runs.")
 
     p.add_argument("--regime", required=True, help="e.g. regimeA, regimeB, regimeC, regimeD")
-    p.add_argument("--run-root", type=Path, required=True)
-    p.add_argument("--outdir", type=Path, required=True)
+    p.add_argument(
+        "--run-root",
+        type=Path,
+        default=None,
+        help="Directory containing trained runs; default: runs/<regime>",
+    )
+    p.add_argument("--outdir", type=Path, default=Path("landscape_runs"))
     p.add_argument("--data-path", type=Path, default=None)
 
     p.add_argument(
@@ -712,6 +717,8 @@ def run_one_checkpoint_kind(
 def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
+    if args.run_root is None:
+        args.run_root = Path("runs") / args.regime
 
     runs = discover_runs(args.run_root)
     runs = apply_run_filter(runs, args.run_filter)
