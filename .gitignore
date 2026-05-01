@@ -22,3 +22,6 @@ src/runs
 
 # Runs analysis directory
 src/landscape_runs
+
+# Temp
+tmp/
