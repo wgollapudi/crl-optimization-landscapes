@@ -19,3 +19,6 @@ src/__pycache__/
 
 # Runs directory
 src/runs
+
+# Runs analysis directory
+src/landscape_runs

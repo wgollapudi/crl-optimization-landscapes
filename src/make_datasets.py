@@ -238,16 +238,25 @@ def make_anchor_features(
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """
-    Build enginnered anchor featrues. (to satisfy sparse identifibility theorem in Moran et. at. 2022)
+    Build engineered anchor features for the sparse-decoding identifiability theorem.
 
     Output order:
       z0_anchor0, z0_anchor1, ..., z1_anchor0, z1_anchor1, ...
 
-    Each anchor depends on exactly one latent coordinate.
+    Each anchor depends on exactly one latent coordinate.  For each latent
+    coordinate, all anchor copies use the same single-coordinate map with
+    independent optional noise:
 
-    Note that anchor featrues are constructed as determanistic nonlinear functions of the underlying SCM latents prior to quantization. This preserves the identifiability assumptions of Moran et al. 2022, while images are generated from quantized latents via the dSprites renderer.
+        a_{j,m} = g_j(z_j) + eps_{j,m}
 
-    Unfortunatly, the model will now technically see two inconsistant views of "the same" latent, as image depends on z_quantized, and anchors depend on z_true.
+    This is stricter than merely giving two different single-latent views: Moran
+    et al.'s anchor assumption requires at least two features per factor with the
+    same conditional mean function.
+
+    Anchors are constructed from the underlying SCM latents prior to
+    quantization. Images are still generated from quantized latents through the
+    dSprites renderer, so the model sees a continuous anchor view and a
+    quantized rendered image view of the same latent sample.
     """
     if z.ndim != 2:
         raise ValueError(f"z must have shape [N, latent_dim], got {z.shape}")
@@ -259,24 +268,14 @@ def make_anchor_features(
     if rng is None:
         rng = np.random.default_rng()
 
-    funcs = [
-        lambda x: x,
-        lambda x: np.tanh(1.5 * x),
-        lambda x: x**2 + 0.5 * x,
-        lambda x: np.sin(np.pi * x),
-        lambda x: np.sign(x) * np.sqrt(np.abs(x) + 1e-6),
-        lambda x: x**3,
-    ]
-
     anchors: list[np.ndarray] = []
 
     for j in range(z.shape[1]):
         zj = z[:, j].astype(np.float32, copy=False)
+        base_anchor = zj
 
-        for a in range(anchors_per_latent):
-            f = funcs[a % len(funcs)]
-            anchor = f(zj).astype(np.float32, copy=False)
-            anchors.append(anchor)
+        for _ in range(anchors_per_latent):
+            anchors.append(base_anchor.copy())
 
     out = np.stack(anchors, axis=1).astype(np.float32, copy=False)
 

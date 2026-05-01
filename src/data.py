@@ -286,6 +286,15 @@ class DataModule:
         assert self.val_ds is not None
         assert self.test_ds is not None
 
+        env_ids = torch.cat(
+            [
+                self.train_ds.env_id,
+                self.val_ds.env_id,
+                self.test_ds.env_id,
+            ],
+            dim=0,
+        )
+
         return {
             "path": str(self.cfg.path),
             "train_size": len(self.train_ds),
@@ -294,4 +303,6 @@ class DataModule:
             "image_shape": tuple(self.train_ds.images.shape[1:]),
             "anchor_dim": None if self.train_ds.x_anchor is None else int(self.train_ds.x_anchor.shape[1]),
             "latent_dim": None if self.train_ds.z_true is None else int(self.train_ds.z_true.shape[1]),
+            "num_intervention_envs": int(env_ids.max().item()) + 1,
+            "env_ids": sorted(int(v) for v in torch.unique(env_ids).tolist()),
         }

@@ -54,6 +54,7 @@ def make_config_hash(args: argparse.Namespace) -> str:
         "mmd_weight": args.mmd_weight,
         "graph_l1_weight": args.graph_l1_weight,
         "num_intervention_variants": args.num_intervention_variants,
+        "num_intervention_envs": args.num_intervention_envs,
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "grad_clip_norm": args.grad_clip_norm,
@@ -101,6 +102,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mmd-weight", type=float, default=1.0)
     parser.add_argument("--graph-l1-weight", type=float, default=1e-3)
     parser.add_argument("--num-intervention-variants", type=int, default=2)
+    parser.add_argument(
+        "--num-intervention-envs",
+        type=int,
+        default=0,
+        help="Number of env_id labels for CD-VAE intervention encoder; 0 means infer from dataset",
+    )
 
     # Optimization
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -128,14 +135,12 @@ def normalize_model_args(args: argparse.Namespace) -> None:
             args.anchor_dim = 2 * args.latent_dim
 
     if args.model_name == "causal_discrepancy":
-        if args.use_anchor_features:
+        if args.use_anchor_features and args.anchor_dim == 0:
+            args.anchor_dim = 2 * args.latent_dim
+        if (not args.use_anchor_features) and args.anchor_dim != 0:
             raise ValueError(
-                "--model-name causal_discrepancy is image-only; do not pass "
-                "--use-anchor-features"
-            )
-        if args.anchor_dim != 0:
-            raise ValueError(
-                "--model-name causal_discrepancy requires --anchor-dim 0"
+                "--anchor-dim > 0 requires --use-anchor-features for "
+                "causal_discrepancy"
             )
 
 
@@ -161,6 +166,7 @@ def build_configs(args: argparse.Namespace) -> tuple[DataConfig, ModelConfig, Op
         mmd_weight=args.mmd_weight,
         graph_l1_weight=args.graph_l1_weight,
         num_intervention_variants=args.num_intervention_variants,
+        num_intervention_envs=args.num_intervention_envs,
     )
 
     optim_cfg = OptimConfig(
@@ -184,11 +190,11 @@ def build_configs(args: argparse.Namespace) -> tuple[DataConfig, ModelConfig, Op
 
 
 def validate_data_summary(model_cfg: ModelConfig, data_summary: dict) -> None:
-    if model_cfg.model_name == "sparse":
+    if model_cfg.model_name in {"sparse", "causal_discrepancy"} and model_cfg.anchor_dim > 0:
         dataset_anchor_dim = data_summary.get("anchor_dim")
         if dataset_anchor_dim is None:
             raise ValueError(
-                "SparseVAE requires anchor features in the dataset; regenerate data "
+                f"{model_cfg.model_name} requires anchor features in the dataset; regenerate data "
                 "with anchor_features and pass --use-anchor-features"
             )
         if int(dataset_anchor_dim) != model_cfg.anchor_dim:
@@ -233,6 +239,8 @@ def main() -> None:
     dm = DataModule(data_cfg, include_metadata=False)
     dm.setup()
     data_summary = dm.summary()
+    if model_cfg.model_name == "causal_discrepancy" and model_cfg.num_intervention_envs == 0:
+        model_cfg.num_intervention_envs = int(data_summary["num_intervention_envs"])
     validate_data_summary(model_cfg, data_summary)
 
     model = build_model(model_cfg)

@@ -10,16 +10,20 @@ from data import Batch
 from models.base_vae import BaseVAE, ModelOutput, Reconstruction
 from models.common import Encoder
 from models.plain_vae import ImageDecoder
+from models.sparse_vae import HardAnchorDecoder
 
 @dataclass
 class CausalDiscrepancyVAEConfig:
     image_shape: tuple[int, int, int]
     latent_dim: int
     hidden_dim: int
+    anchor_dim: int = 0
     num_intervention_variants: int = 2
+    num_intervention_envs: int = 0
     mmd_weight: float = 1.0
     graph_l1_weight: float = 1e-3
     decoder_num_hidden_layers: int = 2
+    anchor_hidden_dim: int = 16
     mmd_bandwidths: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0)
 
 def _normalized_sq_dists(x: Tensor, y: Tensor) -> Tensor:
@@ -75,102 +79,57 @@ class LinearCausalSCMLayer(nn.Module):
     """
     Lower-triangular linear SCM from exogenous z to causal latents u.
 
-    The topological order is fixed to latent dimensions 0..K-1.  Interventions
-    replace the targeted structural equation before descendants are computed.
+    The triangular order is a practical DAG parameterization. Node labels are
+    arbitrary: intervention labels are mapped into this learned order by the
+    InterventionEncoder, and true intervention targets are diagnostics-only.
     """
 
     def __init__(
         self,
         latent_dim: int,
-        num_intervention_variants: int = 2,
     ) -> None:
         super().__init__()
 
         if latent_dim <= 0:
             raise ValueError("latent_dim must be > 0")
-        if num_intervention_variants <= 0:
-            raise ValueError("num_intervention_variants must be > 0")
 
         self.latent_dim = latent_dim
-        self.num_intervention_variants = num_intervention_variants
 
         self.raw_adjacency = nn.Parameter(torch.zeros(latent_dim, latent_dim))
         lower_mask = torch.tril(torch.ones(latent_dim, latent_dim), diagonal=-1)
         self.register_buffer("lower_mask", lower_mask)
 
-        self.intervention_means = nn.Parameter(
-            torch.zeros(latent_dim, num_intervention_variants)
-        )
-        self.intervention_log_scales = nn.Parameter(
-            torch.zeros(latent_dim, num_intervention_variants)
-        )
-
     def adjacency(self) -> Tensor:
         return self.raw_adjacency * self.lower_mask
-
-    def _prepare_labels(
-        self,
-        z: Tensor,
-        intervention_target: Tensor | None,
-        intervention_variant: Tensor | None,
-    ) -> tuple[Tensor, Tensor]:
-        b = z.shape[0]
-        device = z.device
-
-        if intervention_target is None:
-            target = torch.full((b,), -1, device=device, dtype=torch.long)
-        else:
-            target = intervention_target.to(device=device, dtype=torch.long)
-
-        if intervention_variant is None:
-            variant = torch.zeros(b, device=device, dtype=torch.long)
-        else:
-            variant = intervention_variant.to(device=device, dtype=torch.long)
-
-        if target.shape != (b,):
-            raise ValueError(
-                f"intervention_target must have shape [{b}], got {tuple(target.shape)}"
-            )
-        if variant.shape != (b,):
-            raise ValueError(
-                f"intervention_variant must have shape [{b}], got {tuple(variant.shape)}"
-            )
-
-        invalid_target = (target < -1) | (target >= self.latent_dim)
-        if invalid_target.any().item():
-            raise ValueError(
-                "intervention_target values must be -1 or in [0, latent_dim)"
-            )
-
-        intervened = target >= 0
-        invalid_variant = (
-            intervened
-            & ((variant < 0) | (variant >= self.num_intervention_variants))
-        )
-        if invalid_variant.any().item():
-            raise ValueError(
-                "intervention_variant values for intervened samples must be in "
-                "[0, num_intervention_variants)"
-            )
-
-        return target, variant
 
     def forward(
         self,
         z: Tensor,
-        intervention_target: Tensor | None = None,
-        intervention_variant: Tensor | None = None,
+        target_probs: Tensor | None = None,
+        intervention_means: Tensor | None = None,
+        intervention_log_scales: Tensor | None = None,
     ) -> Tensor:
         if z.ndim != 2 or z.shape[1] != self.latent_dim:
             raise ValueError(
                 f"z must have shape [B, {self.latent_dim}], got {tuple(z.shape)}"
             )
 
-        target, variant = self._prepare_labels(
-            z=z,
-            intervention_target=intervention_target,
-            intervention_variant=intervention_variant,
-        )
+        b = z.shape[0]
+        if target_probs is None:
+            target_probs = z.new_zeros((b, self.latent_dim))
+        if intervention_means is None:
+            intervention_means = z.new_zeros((b, self.latent_dim))
+        if intervention_log_scales is None:
+            intervention_log_scales = z.new_zeros((b, self.latent_dim))
+
+        expected = (b, self.latent_dim)
+        for name, value in [
+            ("target_probs", target_probs),
+            ("intervention_means", intervention_means),
+            ("intervention_log_scales", intervention_log_scales),
+        ]:
+            if value.shape != expected:
+                raise ValueError(f"{name} must have shape {expected}, got {tuple(value.shape)}")
 
         adjacency = self.adjacency()
         u = z.new_zeros(z.shape)
@@ -182,26 +141,90 @@ class LinearCausalSCMLayer(nn.Module):
                 parent_effect = u[:, :j] @ adjacency[j, :j]
                 value = z[:, j] + parent_effect
 
-            intervened_j = target == j
-            if intervened_j.any().item():
-                value = value.clone()
-                variants_j = variant[intervened_j]
-                means = self.intervention_means[j, variants_j]
-                scales = torch.exp(self.intervention_log_scales[j, variants_j])
-                value[intervened_j] = means + scales * z[intervened_j, j]
+            p_target = target_probs[:, j]
+            intervention_value = (
+                intervention_means[:, j]
+                + torch.exp(intervention_log_scales[:, j]) * z[:, j]
+            )
+            value = (1.0 - p_target) * value + p_target * intervention_value
 
             u[:, j] = value
 
         return u
 
 
+class InterventionEncoder(nn.Module):
+    """
+    Learn intervention target and shift/scale from observed environment labels.
+
+    env_id=0 is reserved for the observational environment and returns no
+    intervention. True intervention targets from the dataset are not consumed by
+    this module; they are only diagnostics metadata.
+    """
+
+    def __init__(self, num_envs: int, latent_dim: int) -> None:
+        super().__init__()
+
+        if num_envs <= 0:
+            raise ValueError("num_envs must be > 0")
+        if latent_dim <= 0:
+            raise ValueError("latent_dim must be > 0")
+
+        self.num_envs = num_envs
+        self.latent_dim = latent_dim
+        self.target_logits = nn.Embedding(num_envs, latent_dim)
+        self.means = nn.Embedding(num_envs, latent_dim)
+        self.log_scales = nn.Embedding(num_envs, latent_dim)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.target_logits.weight)
+        nn.init.zeros_(self.means.weight)
+        nn.init.zeros_(self.log_scales.weight)
+
+    def forward(self, env_id: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        env = env_id.to(dtype=torch.long)
+        if env.ndim != 1:
+            raise ValueError(f"env_id must have shape [B], got {tuple(env.shape)}")
+        if ((env < 0) | (env >= self.num_envs)).any().item():
+            raise ValueError(
+                f"env_id values must be in [0, {self.num_envs}); got "
+                f"min={int(env.min().item())}, max={int(env.max().item())}"
+            )
+
+        logits = self.target_logits(env)
+        target_probs = torch.softmax(logits, dim=1)
+        means = self.means(env)
+        log_scales = self.log_scales(env)
+
+        observational = env == 0
+        if observational.any().item():
+            target_probs = target_probs.clone()
+            means = means.clone()
+            log_scales = log_scales.clone()
+            target_probs[observational] = 0.0
+            means[observational] = 0.0
+            log_scales[observational] = 0.0
+
+        return target_probs, means, log_scales
+
+    @torch.no_grad()
+    def target_probabilities(self) -> Tensor:
+        probs = torch.softmax(self.target_logits.weight, dim=1)
+        if self.num_envs > 0:
+            probs = probs.clone()
+            probs[0] = 0.0
+        return probs
+
+
 class CausalDiscrepancyVAE(BaseVAE):
     """
-    Regimes C/D model: simplified discrepancy-based causal VAE.
+    Regimes C/D model: discrepancy-based causal VAE.
 
-    Zhang et al.'s full method uses a deep SCM and intervention encoder.  This
-    project-compatible version uses known intervention labels, a linear
-    lower-triangular SCM, and an MMD discrepancy over generated vs. real images.
+    The model uses env_id labels to learn an intervention-to-target map and
+    never consumes true intervention_target during training. The true targets in
+    the dataset are diagnostics metadata for post-hoc permutation/equivalence
+    checks.
     """
 
     model_name = "CausalDiscrepancyVAE"
@@ -212,10 +235,13 @@ class CausalDiscrepancyVAE(BaseVAE):
         latent_dim: int,
         image_shape: tuple[int, int, int],
         hidden_dim: int,
+        anchor_dim: int = 0,
         num_intervention_variants: int = 2,
+        num_intervention_envs: int = 0,
         mmd_weight: float = 1.0,
         graph_l1_weight: float = 1e-3,
         decoder_num_hidden_layers: int = 2,
+        anchor_hidden_dim: int = 16,
         mmd_bandwidths: Sequence[float] = (0.25, 0.5, 1.0, 2.0, 4.0),
         activation: type[nn.Module] = nn.ReLU,
         cfg: CausalDiscrepancyVAEConfig | None = None,
@@ -226,28 +252,38 @@ class CausalDiscrepancyVAE(BaseVAE):
             raise ValueError("mmd_weight must be >= 0")
         if graph_l1_weight < 0.0:
             raise ValueError("graph_l1_weight must be >= 0")
+        if anchor_dim < 0:
+            raise ValueError("anchor_dim must be >= 0")
+        if num_intervention_envs <= 0:
+            raise ValueError("num_intervention_envs must be > 0")
 
         self.cfg = cfg or CausalDiscrepancyVAEConfig(
             image_shape=tuple(image_shape),
             latent_dim=latent_dim,
             hidden_dim=hidden_dim,
+            anchor_dim=anchor_dim,
             num_intervention_variants=num_intervention_variants,
+            num_intervention_envs=num_intervention_envs,
             mmd_weight=mmd_weight,
             graph_l1_weight=graph_l1_weight,
             decoder_num_hidden_layers=decoder_num_hidden_layers,
+            anchor_hidden_dim=anchor_hidden_dim,
             mmd_bandwidths=tuple(float(v) for v in mmd_bandwidths),
         )
 
         self.latent_dim = latent_dim
         self.image_shape = image_shape
         self.hidden_dim = hidden_dim
+        self.anchor_dim = anchor_dim
+        self.num_intervention_envs = num_intervention_envs
         self.mmd_weight = float(mmd_weight)
         self.graph_l1_weight = float(graph_l1_weight)
         self.mmd_bandwidths = tuple(float(v) for v in mmd_bandwidths)
 
-        self.scm = LinearCausalSCMLayer(
+        self.scm = LinearCausalSCMLayer(latent_dim=latent_dim)
+        self.intervention_encoder = InterventionEncoder(
+            num_envs=num_intervention_envs,
             latent_dim=latent_dim,
-            num_intervention_variants=num_intervention_variants,
         )
         self.image_decoder = ImageDecoder(
             latent_dim=latent_dim,
@@ -256,6 +292,16 @@ class CausalDiscrepancyVAE(BaseVAE):
             num_hidden_layers=decoder_num_hidden_layers,
             activation=activation,
         )
+        self.anchor_decoder: HardAnchorDecoder | None
+        if anchor_dim > 0:
+            self.anchor_decoder = HardAnchorDecoder(
+                latent_dim=latent_dim,
+                anchor_dim=anchor_dim,
+                hidden_dim=anchor_hidden_dim,
+                activation=activation,
+            )
+        else:
+            self.anchor_decoder = None
 
     @classmethod
     def from_model_config(cls, model_cfg) -> "CausalDiscrepancyVAE":
@@ -263,7 +309,9 @@ class CausalDiscrepancyVAE(BaseVAE):
             image_shape=tuple(model_cfg.image_shape),
             latent_dim=model_cfg.latent_dim,
             hidden_dim=model_cfg.hidden_dim,
+            anchor_dim=model_cfg.anchor_dim,
             num_intervention_variants=model_cfg.num_intervention_variants,
+            num_intervention_envs=model_cfg.num_intervention_envs,
             mmd_weight=model_cfg.mmd_weight,
             graph_l1_weight=model_cfg.graph_l1_weight,
         )
@@ -272,7 +320,7 @@ class CausalDiscrepancyVAE(BaseVAE):
             image_shape=cfg.image_shape,
             latent_dim=cfg.latent_dim,
             hidden_dim=cfg.hidden_dim,
-            anchor_dim=0,
+            anchor_dim=cfg.anchor_dim,
         )
 
         return cls(
@@ -280,10 +328,13 @@ class CausalDiscrepancyVAE(BaseVAE):
             latent_dim=cfg.latent_dim,
             image_shape=cfg.image_shape,
             hidden_dim=cfg.hidden_dim,
+            anchor_dim=cfg.anchor_dim,
             num_intervention_variants=cfg.num_intervention_variants,
+            num_intervention_envs=cfg.num_intervention_envs,
             mmd_weight=cfg.mmd_weight,
             graph_l1_weight=cfg.graph_l1_weight,
             decoder_num_hidden_layers=cfg.decoder_num_hidden_layers,
+            anchor_hidden_dim=cfg.anchor_hidden_dim,
             mmd_bandwidths=cfg.mmd_bandwidths,
             cfg=cfg,
         )
@@ -292,15 +343,23 @@ class CausalDiscrepancyVAE(BaseVAE):
         return asdict(self.cfg)
 
     def latent_to_decoder_input(self, z: Tensor, batch: Batch) -> Tensor:
+        target_probs, means, log_scales = self.intervention_encoder(batch.env_id)
         return self.scm(
             z,
-            intervention_target=batch.intervention_target,
-            intervention_variant=batch.intervention_variant,
+            target_probs=target_probs,
+            intervention_means=means,
+            intervention_log_scales=log_scales,
         )
 
     def decode(self, decoder_latent: Tensor, batch: Batch) -> Reconstruction:
         del batch
-        return Reconstruction(img_logits=self.image_decoder(decoder_latent))
+        anchor_mean = None
+        if self.anchor_decoder is not None:
+            anchor_mean = self.anchor_decoder(decoder_latent)
+        return Reconstruction(
+            img_logits=self.image_decoder(decoder_latent),
+            anchor_mean=anchor_mean,
+        )
 
     def _grouped_mmd(self, generated_flat: Tensor, real_flat: Tensor, env_id: Tensor) -> Tensor:
         mmd_values: list[Tensor] = []
@@ -336,18 +395,62 @@ class CausalDiscrepancyVAE(BaseVAE):
         if self.mmd_weight == 0.0:
             mmd = out.z.new_zeros(())
         else:
-            z_prior = torch.randn_like(out.z)
-            u_prior = self.scm(
-                z_prior,
-                intervention_target=batch.intervention_target,
-                intervention_variant=batch.intervention_variant,
-            )
-            generated_logits = self.image_decoder(u_prior)
-            generated_flat = torch.sigmoid(generated_logits).flatten(start_dim=1)
-            real_flat = batch.x_img.flatten(start_dim=1)
-            mmd = self._grouped_mmd(generated_flat, real_flat, batch.env_id)
+            mmd = self._virtual_intervention_mmd(batch=batch, out=out)
 
         return {
             "graph_l1": graph_l1,
             "mmd": self.mmd_weight * mmd,
         }
+
+    def _virtual_intervention_mmd(
+        self,
+        batch: Batch,
+        out: ModelOutput,
+    ) -> Tensor:
+        obs_mask = batch.env_id == 0
+        if int(obs_mask.sum().item()) < 2:
+            return out.z.new_zeros(())
+
+        obs_z = out.z[obs_mask]
+        mmd_values: list[Tensor] = []
+
+        for env in torch.unique(batch.env_id):
+            env_int = int(env.item())
+            if env_int == 0:
+                continue
+
+            real_mask = batch.env_id == env
+            if int(real_mask.sum().item()) < 2:
+                continue
+
+            virtual_env = torch.full(
+                (obs_z.shape[0],),
+                env_int,
+                device=batch.env_id.device,
+                dtype=torch.long,
+            )
+            target_probs, means, log_scales = self.intervention_encoder(virtual_env)
+            virtual_u = self.scm(
+                obs_z,
+                target_probs=target_probs,
+                intervention_means=means,
+                intervention_log_scales=log_scales,
+            )
+            virtual_logits = self.image_decoder(virtual_u)
+            virtual_flat = torch.sigmoid(virtual_logits).flatten(start_dim=1)
+            real_flat = batch.x_img[real_mask].flatten(start_dim=1)
+            mmd_values.append(
+                rbf_mmd(
+                    virtual_flat,
+                    real_flat,
+                    bandwidths=self.mmd_bandwidths,
+                )
+            )
+
+        if not mmd_values:
+            return out.z.new_zeros(())
+        return torch.stack(mmd_values).mean()
+
+    @torch.no_grad()
+    def learned_intervention_targets(self) -> Tensor:
+        return self.intervention_encoder.target_probabilities()

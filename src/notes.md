@@ -1,7 +1,7 @@
 Concens rn:
 When we checkpoint SparseVAE are we saving both decoders?
-Saving the right checkpoints
-Finish evaluation infra (oh lawd)
+Add more checkpoints - initial, 50%, final, best_val
+Finish evaluation (part 2)
 Make sure CD-VAE is good
 Testing
 

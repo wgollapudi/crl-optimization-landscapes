@@ -26,6 +26,7 @@ class ModelConfig:
     mmd_weight: float = 1.0
     graph_l1_weight: float = 1e-3
     num_intervention_variants: int = 2
+    num_intervention_envs: int = 0
 
 @dataclass
 class OptimConfig:

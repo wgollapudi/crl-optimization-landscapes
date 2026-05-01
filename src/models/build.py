@@ -38,7 +38,7 @@ def load_model_from_checkpoint(
     checkpoint_path: str | Path,
     device: str | torch.device = "cpu",
 ) -> nn.Module:
-    payload = torch.load(checkpoint_path, map_location=device)
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model = build_model_from_checkpoint_payload(payload)
     model.load_state_dict(payload["model_state_dict"])
     model.to(device)

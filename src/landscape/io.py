@@ -13,9 +13,12 @@ def ensure_dir(path: str | Path) -> Path:
     return path
 
 
-def seed_dir(root: str | Path, regime: str, seed: int, checkpoint_kind: str) -> Path:
-    return ensure_dir(Path(root) / regime / f"seed_{seed}" / checkpoint_kind)
+def seed_dir(root: str | Path, regime: str, run_id: str, checkpoint_kind: str) -> Path:
+    return ensure_dir(Path(root) / regime / run_id / checkpoint_kind)
 
+def seed_probe_path(root: str | Path, regime: str, run_id: str, checkpoint_kind: str,
+                    probe_name: str,) -> Path:
+    return seed_dir(root, regime, run_id, checkpoint_kind) / f"{probe_name}.npz"
 
 def pair_dir(root: str | Path, regime: str, checkpoint_kind: str) -> Path:
     return ensure_dir(Path(root) / regime / "pairs" / checkpoint_kind)
