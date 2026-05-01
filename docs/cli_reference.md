@@ -137,6 +137,16 @@ Important defaults:
 --slice2d-max-runs 3
 ```
 
+Checkpoint kinds:
+
+```text
+start       start.pt
+mid_best    mid_best.pt
+final       final.pt, with fallback to last.pt
+best_val    best_val_loss.pt, with fallback to best_loss.pt
+all         start, mid_best, final, best_val
+```
+
 ## `analyze_landscapes.py`
 
 Required parameters: none.
@@ -161,3 +171,40 @@ Important defaults:
 --make-figures
 ```
 
+## `scripts/smoke_pipeline.sh`
+
+Required parameters: none.
+
+This is a tiny proof-of-concept pipeline that writes to a disposable output
+directory and exercises all stages:
+
+```text
+tiny dataset generation
+two seeds per regime
+one or more epochs of training
+endpoint / perturbation / slice1d / slice2d / gradnorm / hessian / pairwise probes
+landscape analysis tables
+```
+
+Default command:
+
+```bash
+scripts/smoke_pipeline.sh
+```
+
+Useful faster command:
+
+```bash
+scripts/smoke_pipeline.sh --outdir /tmp/crl_landscape_poc --epochs 1
+```
+
+Important defaults:
+
+```text
+--outdir smoke_runs/poc_<timestamp>
+--dsprites src/data/raw/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz
+--seeds 2
+--epochs 2
+--device cpu
+--figures disabled unless requested
+```

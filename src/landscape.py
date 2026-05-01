@@ -40,11 +40,10 @@ from landscape.subsets import ensure_subset_loader
 
 
 CHECKPOINT_KINDS: dict[str, tuple[str, ...]] = {
+    "start": ("start.pt",),
+    "mid_best": ("mid_best.pt",),
     "final": ("last.pt", "final.pt"),
     "best_val": ("best_val_loss.pt", "best_loss.pt"),
-    # future:
-    # "early": ("early.pt",),
-    # "mid": ("mid.pt",),
 }
 
 

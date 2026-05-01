@@ -97,6 +97,9 @@ class CheckpointManager:
         self.mode = mode
         self.save_every = save_every
         self.best_value: float | None = None
+        self.best_path: Path | None = None
+        self.best_epoch: int | None = None
+        self.best_global_step: int | None = None
 
     def is_best(self, value: float) -> bool:
         if self.best_value is None:
@@ -146,7 +149,9 @@ class CheckpointManager:
             return None
 
         self.best_value = value
-        return self.save(
+        self.best_epoch = epoch
+        self.best_global_step = global_step
+        self.best_path = self.save(
             name=f"best_val_{self.monitor}.pt",
             model=model,
             optimizer=optimizer,
@@ -159,6 +164,81 @@ class CheckpointManager:
                 "mode": self.mode,
             },
         )
+        return self.best_path
+
+    def save_mid_best_from_available_checkpoints(self) -> Path | None:
+        """
+        Save mid_best.pt from the available checkpoint closest to half the best step.
+
+        The true "halfway to best validation" model is only known retrospectively.
+        We avoid saving every epoch by selecting from the bounded checkpoints that
+        already exist: start.pt, periodic epoch_*.pt files, and best_val_*.pt.
+        Use a smaller --save-every for a more precise midpoint.
+        """
+        if self.best_global_step is None:
+            return None
+
+        target_step = 0.5 * float(self.best_global_step)
+        candidates = self._available_midpoint_candidates()
+        if not candidates:
+            return None
+
+        before_or_at_best = [
+            item for item in candidates
+            if item[1] <= self.best_global_step
+        ]
+        if before_or_at_best:
+            candidates = before_or_at_best
+
+        source_path, source_step, source_epoch = min(
+            candidates,
+            key=lambda item: (abs(float(item[1]) - target_step), item[1]),
+        )
+
+        payload = torch.load(source_path, map_location="cpu", weights_only=False)
+        extra = dict(payload.get("extra_state", {}))
+        extra.update(
+            {
+                "checkpoint_kind": "mid_best",
+                "source_checkpoint": str(source_path),
+                "source_epoch": int(source_epoch),
+                "source_global_step": int(source_step),
+                "best_epoch": int(self.best_epoch) if self.best_epoch is not None else -1,
+                "best_global_step": int(self.best_global_step),
+                "target_global_step": target_step,
+                "selection_rule": "available checkpoint closest to 0.5 * best_global_step",
+            }
+        )
+        payload["extra_state"] = extra
+
+        out = self.outdir / "mid_best.pt"
+        torch.save(payload, out)
+        return out
+
+    def _available_midpoint_candidates(self) -> list[tuple[Path, int, int]]:
+        paths = [self.outdir / "start.pt"]
+        paths.extend(sorted(self.outdir.glob("epoch_*.pt")))
+        if self.best_path is not None:
+            paths.append(self.best_path)
+
+        out: list[tuple[Path, int, int]] = []
+        seen: set[Path] = set()
+        for path in paths:
+            if path in seen or not path.exists():
+                continue
+            seen.add(path)
+            try:
+                payload = torch.load(path, map_location="cpu", weights_only=False)
+            except Exception:
+                continue
+            out.append(
+                (
+                    path,
+                    int(payload.get("global_step", 0)),
+                    int(payload.get("epoch", -1)),
+                )
+            )
+        return out
 
 
 class Trainer:
@@ -197,6 +277,18 @@ class Trainer:
         start_time = time.time()
         self.logger.log_message("starting training")
         self.logger.init_epoch_table()
+
+        start_path = self.checkpoints.save(
+            name="start.pt",
+            model=self.model,
+            optimizer=self.optimizer,
+            epoch=-1,
+            global_step=self.global_step,
+            extra_state={"checkpoint_kind": "start"},
+        )
+        self.logger.log_run_message_file_only(
+            f"saved checkpoint epoch=-1 kind=start path={start_path}"
+        )
 
         for epoch in range(self.epochs):
             train_metrics = self._run_epoch(
@@ -275,6 +367,12 @@ class Trainer:
                 self.logger.log_run_message_file_only(
                     f"saved checkpoint epoch={epoch} kind=periodic path={epoch_path}"
                 )
+
+        mid_best_path = self.checkpoints.save_mid_best_from_available_checkpoints()
+        if mid_best_path is not None:
+            self.logger.log_run_message_file_only(
+                f"saved checkpoint kind=mid_best path={mid_best_path}"
+            )
 
         elapsed = time.time() - start_time
         self.logger.log_message(f"finished training elapsed_seconds={elapsed:.2f}")

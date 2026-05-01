@@ -108,10 +108,24 @@ def checkpoint_path(
             best_val_loss.pt
 
     checkpoint_kind:
-        - "final"    -> last.pt
+        - "start"    -> start.pt
+        - "mid_best" -> mid_best.pt
+        - "final"    -> final.pt (fallback: last.pt)
         - "best_val" -> best_val_loss.pt (fallback: best_loss.pt)
     """
     run_dir = Path(run_dir)
+
+    if checkpoint_kind == "start":
+        path = run_dir / "start.pt"
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"Could not find start checkpoint in {run_dir}")
+
+    if checkpoint_kind == "mid_best":
+        path = run_dir / "mid_best.pt"
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"Could not find mid_best checkpoint in {run_dir}")
 
     if checkpoint_kind == "final":
         primary = run_dir / "final.pt"
@@ -140,7 +154,8 @@ def checkpoint_path(
         )
 
     raise ValueError(
-        f"Unknown checkpoint_kind={checkpoint_kind!r}; expected 'final' or 'best_val'"
+        f"Unknown checkpoint_kind={checkpoint_kind!r}; "
+        "expected 'start', 'mid_best', 'final', or 'best_val'"
     )
 
 def pair_name(run_index_i: int, run_index_j: int, probe_name: str) -> str:

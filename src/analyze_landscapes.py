@@ -27,7 +27,7 @@ IDENTITY_COLUMNS = [
     "split",
 ]
 
-CHECKPOINT_KINDS = ("final", "best_val")
+CHECKPOINT_KINDS = ("start", "mid_best", "final", "best_val")
 DEFAULT_REGIMES = ("regimeA", "regimeB", "regimeC", "regimeD")
 DEFAULT_SPLITS = ("val",)
 ARTIFACT_METADATA_KEYS = {

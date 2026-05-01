@@ -36,6 +36,18 @@ python train.py --data-path data/crl_dsprites/single_node_interventions.npz
 python train.py --data-path data/crl_dsprites/two_interventions_per_node.npz
 ```
 
+Each run saves four main checkpoint kinds:
+
+```text
+start       model immediately after initialization, before optimization
+mid_best    available checkpoint closest to half the best-validation step
+final       final training epoch
+best_val    best validation loss
+```
+
+`mid_best` is retrospective and approximate: use a smaller `--save-every` if
+you need a closer halfway checkpoint.
+
 Run landscape probes for one regime:
 
 ```bash
@@ -54,6 +66,13 @@ python analyze_landscapes.py \
   --outdir landscape_analysis \
   --checkpoint-kind best_val \
   --splits val
+```
+
+Run the full pipeline at tiny scale before committing to a large forest:
+
+```bash
+cd ..
+scripts/smoke_pipeline.sh --outdir /tmp/crl_landscape_poc --epochs 1
 ```
 
 ## Workflow
@@ -111,4 +130,3 @@ analysis script does not discard high-uncertainty Hessians; it flags them.
 - [Artifact schema](docs/05_artifact_schema.md)
 - [Scientific assumptions](docs/06_scientific_assumptions.md)
 - [CLI reference](docs/cli_reference.md)
-

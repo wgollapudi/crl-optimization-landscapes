@@ -17,6 +17,16 @@ python landscape.py \
 `--run-root` defaults to `runs/<regime>`.
 `--outdir` defaults to `landscape_runs`.
 
+Supported checkpoint kinds are:
+
+```text
+start
+mid_best
+final
+best_val
+all
+```
+
 ## Probe Groups
 
 `endpoint` evaluates train and validation losses at the checkpoint.
@@ -45,4 +55,3 @@ evaluation with `z = mu(x)`. Subset indices are saved under:
 ```text
 landscape_runs/<regime>/subsets/
 ```
-

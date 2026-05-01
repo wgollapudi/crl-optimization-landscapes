@@ -11,6 +11,15 @@ Path pattern:
 landscape_runs/<regime>/<run_id>/<checkpoint_kind>/<probe>.npz
 ```
 
+Supported checkpoint-kind directories are:
+
+```text
+start
+mid_best
+final
+best_val
+```
+
 Common metadata:
 
 ```text
@@ -136,4 +145,3 @@ perturb_p90_delta_loss_r_0p001
 interp_barrier_recon_img
 slice2d_sublevel_area_frac_rel0p01_loss
 ```
-
