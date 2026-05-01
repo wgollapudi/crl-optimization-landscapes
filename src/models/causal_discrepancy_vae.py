@@ -132,13 +132,14 @@ class LinearCausalSCMLayer(nn.Module):
                 raise ValueError(f"{name} must have shape {expected}, got {tuple(value.shape)}")
 
         adjacency = self.adjacency()
-        u = z.new_zeros(z.shape)
+        u_cols: list[Tensor] = []
 
         for j in range(self.latent_dim):
             if j == 0:
                 value = z[:, j]
             else:
-                parent_effect = u[:, :j] @ adjacency[j, :j]
+                parents = torch.stack(u_cols, dim=1)
+                parent_effect = parents @ adjacency[j, :j]
                 value = z[:, j] + parent_effect
 
             p_target = target_probs[:, j]
@@ -148,9 +149,9 @@ class LinearCausalSCMLayer(nn.Module):
             )
             value = (1.0 - p_target) * value + p_target * intervention_value
 
-            u[:, j] = value
+            u_cols.append(value)
 
-        return u
+        return torch.stack(u_cols, dim=1)
 
 
 class InterventionEncoder(nn.Module):

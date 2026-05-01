@@ -385,6 +385,23 @@ class ExperimentLogger:
         if "lr" in metrics:
             detail_parts.append(f"lr={self._format_float(metrics['lr'], digits=6)}")
 
+        standard_keys = {
+            "loss",
+            "recon_img",
+            "kl",
+            "beta",
+            "lr",
+            "mu_abs_mean",
+            "logvar_mean",
+            "logvar_std",
+        }
+        for key in sorted(metrics):
+            if key in standard_keys:
+                continue
+            if key.startswith(("mu_std_", "mu_mean_", "logvar_mean_")):
+                continue
+            detail_parts.append(f"{key}={self._format_float(metrics[key])}")
+
         if detail_parts:
             self._detail_lines.append("    " + " | ".join(detail_parts))
 
