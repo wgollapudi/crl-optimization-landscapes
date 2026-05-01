@@ -115,32 +115,11 @@ log() {
   echo "[$(timestamp)] $*"
 }
 
-run_cmd() {
-  local label="$1"
-  shift
-  local start end elapsed
-  log "START $label"
-  printf '  '
-  printf '%q ' "$@"
-  echo
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "DRY-RUN $label"
-    return 0
-  fi
-
-  start="$(seconds_now)"
-  "$@"
-  end="$(seconds_now)"
-  elapsed=$((end - start))
-  log "DONE  $label elapsed=$(format_duration "$elapsed")"
-}
-
 run_cmd_logged() {
   local label="$1"
   local logfile="$2"
   shift 2
-  local start end elapsed
+  local start end elapsed status
   log "START $label"
   log "LOG   $logfile"
   printf '  '
@@ -153,14 +132,22 @@ run_cmd_logged() {
   fi
 
   start="$(seconds_now)"
-  if ! "$@" > "$logfile" 2>&1; then
-    log "FAILED $label; last log lines:"
-    tail -40 "$logfile" >&2 || true
-    exit 1
-  fi
+  set +e
+  "$@" > "$logfile" 2>&1
+  status=$?
+  set -e
   end="$(seconds_now)"
   elapsed=$((end - start))
+
+  if [[ "$status" -ne 0 ]]; then
+    log "FAILED $label status=$status elapsed=$(format_duration "$elapsed"); last log lines:"
+    tail -40 "$logfile" >&2 || true
+    FAILURES+=("$label | status=$status | log=$logfile")
+    return 1
+  fi
+
   log "DONE  $label elapsed=$(format_duration "$elapsed")"
+  return 0
 }
 
 mark_step() {
@@ -202,6 +189,7 @@ SKIP_EXPENSIVE=0
 OVERWRITE_LANDSCAPE=0
 DRY_RUN=0
 ANALYSIS_FIGURES="--no-figures"
+FAILURES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -451,7 +439,7 @@ if [[ "$SKIP_TRAIN" -eq 0 ]]; then
         train_cmd+=(--use-anchor-features)
       fi
 
-      run_cmd_logged "train $regime seed=$seed" "$log_file" "${train_cmd[@]}"
+      run_cmd_logged "train $regime seed=$seed" "$log_file" "${train_cmd[@]}" || true
       mark_step "train $regime seed=$seed"
     done
   done
@@ -479,7 +467,7 @@ if [[ "$SKIP_LANDSCAPE" -eq 0 ]]; then
       --max-pairs "$MAX_PAIRS"
       "${landscape_overwrite_args[@]}"
     )
-    run_cmd_logged "landscape broad $regime" "$log_file" "${broad_cmd[@]}"
+    run_cmd_logged "landscape broad $regime" "$log_file" "${broad_cmd[@]}" || true
     mark_step "landscape broad $regime"
   done
 
@@ -503,7 +491,7 @@ if [[ "$SKIP_LANDSCAPE" -eq 0 ]]; then
         --slice2d-max-runs "$SLICE2D_MAX_RUNS"
         "${landscape_overwrite_args[@]}"
       )
-      run_cmd_logged "landscape expensive $regime" "$log_file" "${expensive_cmd[@]}"
+      run_cmd_logged "landscape expensive $regime" "$log_file" "${expensive_cmd[@]}" || true
       mark_step "landscape expensive $regime"
     done
   fi
@@ -520,7 +508,7 @@ if [[ "$SKIP_ANALYSIS" -eq 0 ]]; then
     --bootstrap-samples 2000
     "$ANALYSIS_FIGURES"
   )
-  run_cmd_logged "analyze landscapes" "$log_file" "${analysis_cmd[@]}"
+  run_cmd_logged "analyze landscapes" "$log_file" "${analysis_cmd[@]}" || true
   mark_step "analyze landscapes"
 fi
 
@@ -534,3 +522,14 @@ echo "  runs:       $RUN_ROOT"
 echo "  probes:     $LANDSCAPE_ROOT"
 echo "  analysis:   $ANALYSIS_ROOT"
 echo "  logs:       $LOG_ROOT"
+
+echo
+if [[ "${#FAILURES[@]}" -eq 0 ]]; then
+  log "failure summary: none"
+else
+  log "failure summary: ${#FAILURES[@]} component(s) failed"
+  for failure in "${FAILURES[@]}"; do
+    echo "  - $failure"
+  done
+  exit 1
+fi
